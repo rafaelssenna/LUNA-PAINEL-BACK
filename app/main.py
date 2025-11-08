@@ -2,8 +2,14 @@ from __future__ import annotations
 
 import os
 import logging
+from pathlib import Path
+from dotenv import load_dotenv
 from fastapi import FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
+
+# Carregar .env ANTES de tudo
+env_path = Path(__file__).parent.parent / ".env"
+load_dotenv(env_path)
 
 # Rotas internas
 from .routes import (
@@ -18,6 +24,7 @@ from .routes import (
     lead_status,
     billing,
     users,
+    admin,  # ✅ rotas administrativas
 )
 from .routes import pay_stripe  # ✅ rotas de pagamento (Stripe)
 
@@ -110,6 +117,9 @@ app.include_router(auth_router,        prefix="/api/auth",    tags=["auth"])
 
 # Auth de usuário (e-mail/senha)
 app.include_router(users.router,       prefix="/api/users",   tags=["users"])
+
+# Admin (painel administrativo)
+app.include_router(admin.router,       prefix="/api/admin",   tags=["admin"])
 
 # Core
 app.include_router(chats.router,       prefix="/api",         tags=["chats"])
