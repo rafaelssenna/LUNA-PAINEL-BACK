@@ -73,13 +73,19 @@ _default_origins = {
 }
 _env_origins = set(allowed_origins())
 _all_origins = sorted(_default_origins.union(_env_origins))
+
+# Se não houver origens configuradas, permitir todas (*)
+if not _all_origins:
+    _all_origins = ["*"]
+
 app.add_middleware(
     CORSMiddleware,
     allow_origins=_all_origins,
     allow_origin_regex=allowed_origin_regex(),
-    allow_credentials=True,
+    allow_credentials=True if "*" not in _all_origins else False,
     allow_methods=["*"],          # ⬅ preflight liberado
     allow_headers=["*"],          # ⬅ preflight liberado
+    expose_headers=["*"],
     max_age=600,
 )
 
@@ -106,12 +112,12 @@ async def _startup():
     except Exception:
         logger.exception("Falha ao inicializar schema do banco (módulo .pg).")
 
-    try:
-        # 🔧 Garante também o schema de billing (tenants/payments)
-        await init_billing_schema()
-        logger.info("Billing schema verificado/criado com sucesso (tenants/payments).")
-    except Exception:
-        logger.exception("Falha ao inicializar billing schema.")
+    # DESABILITADO: Não usamos tabelas tenants/payments, usamos billing
+    # try:
+    #     await init_billing_schema()
+    #     logger.info("Billing schema verificado/criado com sucesso (tenants/payments).")
+    # except Exception:
+    #     logger.exception("Falha ao inicializar billing schema.")
 
 # ---------------------------- Rotas ------------------------------------ #
 # Auth de instância (UAZAPI)
