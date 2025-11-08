@@ -34,6 +34,7 @@ class AdminLoginOut(BaseModel):
 class ConfigureInstanceIn(BaseModel):
     prompt: str
     notes: str = ""
+    redirect_phone: str = ""  # ✅ Número para handoff específico dessa Luna
 
 # ==============================================================================
 # AUTENTICAÇÃO ADMIN
@@ -301,9 +302,10 @@ async def configure_instance(
                 prompt = %s,
                 admin_notes = %s,
                 prompt_history = %s,
+                redirect_phone = %s,
                 updated_at = NOW()
             WHERE id = %s
-        """, (admin_id, body.prompt, body.notes, prompt_history, instance_id))
+        """, (admin_id, body.prompt, body.notes, prompt_history, body.redirect_phone, instance_id))
         
         # Registrar ação
         conn.execute("""
