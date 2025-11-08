@@ -47,12 +47,12 @@ def init_schema():
     -- =========================================
     CREATE TABLE IF NOT EXISTS lead_status (
       instance_id   TEXT NOT NULL,
-      chatid        TEXT NOT NULL,
+      chat_id       TEXT NOT NULL,
       stage         TEXT NOT NULL DEFAULT 'contatos',
       updated_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       last_msg_ts   BIGINT NOT NULL DEFAULT 0,
       last_from_me  BOOLEAN NOT NULL DEFAULT FALSE,
-      PRIMARY KEY (instance_id, chatid)
+      PRIMARY KEY (instance_id, chat_id)
     );
 
     DO $$
@@ -90,7 +90,7 @@ def init_schema():
         NULL;
       END;
       BEGIN
-        ALTER TABLE lead_status ADD PRIMARY KEY (instance_id, chatid);
+        ALTER TABLE lead_status ADD PRIMARY KEY (instance_id, chat_id);
       EXCEPTION WHEN others THEN
         NULL;
       END;
@@ -137,19 +137,19 @@ def init_schema():
     -- =========================================
     CREATE TABLE IF NOT EXISTS messages (
       instance_id   TEXT        NOT NULL,
-      chatid        TEXT        NOT NULL,
+      chat_id       TEXT        NOT NULL,
       msgid         TEXT        NOT NULL,
       from_me       BOOLEAN     NOT NULL DEFAULT FALSE,
       ts            BIGINT      NOT NULL,
-      text          TEXT,
+      content       TEXT,
       media_url     TEXT,
       media_mime    TEXT,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (instance_id, chatid, msgid)
+      PRIMARY KEY (instance_id, chat_id, msgid)
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
-      ON messages(instance_id, chatid, ts DESC);
+      ON messages(instance_id, chat_id, ts DESC);
 
     CREATE INDEX IF NOT EXISTS idx_messages_ts
       ON messages(ts DESC);
