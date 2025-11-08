@@ -21,10 +21,12 @@ from .routes import (
     name_image,
     crm,
     media,
+    ai,
     lead_status,
     billing,
     users,
     admin,  # ✅ rotas administrativas
+    webhook,  # ✅ agente IA
 )
 from .routes import pay_stripe  # ✅ rotas de pagamento (Stripe)
 
@@ -120,6 +122,9 @@ app.include_router(users.router,       prefix="/api/users",   tags=["users"])
 
 # Admin (painel administrativo)
 app.include_router(admin.router,       prefix="/api/admin",   tags=["admin"])
+
+# Webhook WhatsApp (agente IA)
+app.include_router(webhook.router,     prefix="/api",         tags=["webhook"])
 
 # Core
 app.include_router(chats.router,       prefix="/api",         tags=["chats"])
