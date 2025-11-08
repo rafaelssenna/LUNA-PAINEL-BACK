@@ -24,7 +24,7 @@ JWT_TTL_SECONDS = 86400  # 24 horas para admin
 # ==============================================================================
 
 class AdminLoginIn(BaseModel):
-    email: EmailStr
+    email: str  # Aceita qualquer string (ex: "admin")
     password: str
 
 class AdminLoginOut(BaseModel):
