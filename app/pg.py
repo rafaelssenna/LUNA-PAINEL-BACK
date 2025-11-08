@@ -140,7 +140,7 @@ def init_schema():
       chat_id       TEXT        NOT NULL,
       msgid         TEXT        NOT NULL,
       from_me       BOOLEAN     NOT NULL DEFAULT FALSE,
-      ts            BIGINT      NOT NULL,
+      timestamp     BIGINT      NOT NULL,
       content       TEXT,
       media_url     TEXT,
       media_mime    TEXT,
@@ -149,10 +149,10 @@ def init_schema():
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
-      ON messages(instance_id, chat_id, ts DESC);
+      ON messages(instance_id, chat_id, timestamp DESC);
 
     CREATE INDEX IF NOT EXISTS idx_messages_ts
-      ON messages(ts DESC);
+      ON messages(timestamp DESC);
     """
     with get_pool().connection() as con:
         con.execute(sql)
