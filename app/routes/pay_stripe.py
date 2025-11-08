@@ -71,12 +71,12 @@ class CheckoutOut(BaseModel):
 # ---------------------------- Helper functions -------------------------------
 def _build_success_url(ref: str) -> str:
     base = RETURN_BASE or ""
-    return f"{base}?ref={ref}" if base else f"?ref={ref}"
+    return f"{base}?success=true" if base else "?success=true"
 
 
 def _build_cancel_url(ref: str) -> str:
     base = CANCEL_BASE or ""
-    return f"{base}?ref={ref}" if base else f"?ref={ref}"
+    return f"{base}?canceled=true" if base else "?canceled=true"
 
 
 def _extract_event_parts(event: Any) -> Tuple[str, Dict[str, Any]]:
