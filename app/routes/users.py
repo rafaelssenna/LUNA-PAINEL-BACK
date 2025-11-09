@@ -143,7 +143,7 @@ def login(body: LoginIn) -> LoginOut:
         with conn.cursor() as cur:
             # Buscar usuário
             cur.execute(
-                "SELECT id, email, password FROM users WHERE email = %s",
+                "SELECT id, email, password_hash FROM users WHERE email = %s",
                 (email,)
             )
             row = cur.fetchone()
@@ -152,7 +152,7 @@ def login(body: LoginIn) -> LoginOut:
                 raise HTTPException(status_code=401, detail="Credenciais inválidas")
             
             user_id = row["id"]
-            stored_password = row["password"]
+            stored_password = row["password_hash"]
             
             if not verify_password(password, stored_password):
                 raise HTTPException(status_code=401, detail="Credenciais inválidas")
