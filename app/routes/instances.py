@@ -378,6 +378,21 @@ async def get_status_route(
                 
                 current_status = "connected"
                 log.info(f"✅ Instância {instance_id} conectada com número {phone_number}")
+                
+                # ✅ CONFIGURAR WEBHOOK AUTOMATICAMENTE
+                try:
+                    log.info(f"🔗 [WEBHOOK] Configurando webhook automaticamente...")
+                    webhook_result = await uazapi.set_webhook(
+                        instance_id=instance_id,
+                        token=token,
+                        webhook_url=WEBHOOK_URL
+                    )
+                    log.info(f"✅ [WEBHOOK] Webhook configurado com sucesso!")
+                except Exception as webhook_error:
+                    # Não falhar se webhook der erro, mas logar
+                    log.error(f"⚠️ [WEBHOOK] Erro ao configurar webhook: {webhook_error}")
+                    log.error(f"⚠️ [WEBHOOK] Instância funcionará, mas webhook precisa ser configurado manualmente")
+                
             else:
                 log.warning(f"⚠️ [STATUS] Owner não veio na resposta do status!")
         
