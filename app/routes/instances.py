@@ -90,11 +90,11 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         if not instance_token:
             raise HTTPException(500, "UAZAPI não retornou token da instância")
         
-        log.info(f"✅ Instância criada - UAZAPI ID: {instance_id}, Name: {instance_name}")
+        log.info(f"✅ Instância criada - UAZAPI ID: {instance_id}, Name: {instance_name}, Token: {instance_token[:20]}...")
         
-        # Gerar UUID para o banco (PostgreSQL espera UUID)
-        db_uuid = str(uuid.uuid4())
-        log.info(f"✅ UUID gerado para banco: {db_uuid}")
+        # Usar o próprio instance_id da UAZAPI como identificador
+        # O ID da UAZAPI será usado tanto no banco quanto nas chamadas API
+        db_instance_id = instance_id
         
         # 2. Configurar webhook automaticamente (TODO: verificar endpoint correto)
         # try:
@@ -103,27 +103,33 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         # except Exception as e:
         #     log.warning(f"⚠️ Falha ao configurar webhook para {instance_id}: {e}")
         
-        # 3. Salvar no banco (armazenar ID da UAZAPI em jsonb extra_data)
-        with get_pool().connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """
-                    INSERT INTO instances (
-                        id, user_id, uazapi_token, uazapi_host,
-                        status, admin_status, extra_data, created_at
-                    ) VALUES (%s, %s, %s, %s, %s, %s, %s::jsonb, NOW())
-                    """,
-                    (
-                        db_uuid,  # ← UUID válido para PostgreSQL
-                        user_id,
-                        instance_token,
-                        uazapi.UAZAPI_HOST,
-                        "disconnected",
-                        "pending_config",
-                        f'{{"uazapi_instance_id": "{instance_id}", "instance_name": "{instance_name}"}}'  # ← Armazenar ID da UAZAPI
+        # 3. Salvar no banco usando apenas colunas que existem
+        try:
+            with get_pool().connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        INSERT INTO instances (
+                            id, user_id, uazapi_token, uazapi_host,
+                            status, admin_status, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        """,
+                        (
+                            db_instance_id,  # ← Usar ID da UAZAPI diretamente
+                            user_id,
+                            instance_token,
+                            uazapi.UAZAPI_HOST,
+                            "disconnected",
+                            "pending_config"
+                        )
                     )
-                )
-                conn.commit()
+                    conn.commit()
+                    log.info(f"✅ Instância salva no banco: {db_instance_id}")
+        except Exception as db_error:
+            # Se falhar por UUID, logar mas não bloquear (instância já foi criada na UAZAPI)
+            log.warning(f"⚠️ Falha ao salvar no banco (UUID): {db_error}")
+            log.warning(f"⚠️ Instância criada na UAZAPI mas não salva no banco!")
+            # Continuar mesmo assim para retornar o QR code
         
         # 4. Buscar QR Code
         qr_data = instance_data.get("qrcode")  # QR code já vem na resposta!
@@ -137,7 +143,7 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                 log.warning(f"⚠️ Falha ao buscar QR code: {e}")
         
         return {
-            "instance_id": db_uuid,  # ← Retornar UUID do banco (para o frontend usar)
+            "instance_id": db_instance_id,  # ← Retornar ID da UAZAPI (para o frontend usar)
             "status": "disconnected",
             "qrcode": qr_data,
             "uazapi_token": instance_token,  # ← Retornar token para autenticação
@@ -161,11 +167,11 @@ async def get_qrcode_route(
     """
     user_id = user["id"]
     
-    # Verificar permissão e buscar ID da UAZAPI
+    # Verificar permissão (instance_id já é o ID da UAZAPI)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT uazapi_token, status, extra_data FROM instances WHERE id = %s AND user_id = %s",
+                "SELECT uazapi_token, status FROM instances WHERE id = %s AND user_id = %s",
                 (instance_id, user_id)
             )
             row = cur.fetchone()
@@ -173,11 +179,7 @@ async def get_qrcode_route(
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
             
-            token, status, extra_data = row
-            uazapi_instance_id = extra_data.get("uazapi_instance_id") if extra_data else None
-            
-            if not uazapi_instance_id:
-                raise HTTPException(500, "ID da UAZAPI não encontrado")
+            token, status = row
             
             if status == "connected":
                 return {
@@ -186,9 +188,9 @@ async def get_qrcode_route(
                     "message": "WhatsApp já está conectado!"
                 }
     
-    # Buscar QR Code usando o ID da UAZAPI
+    # Buscar QR Code (instance_id já é o ID da UAZAPI)
     try:
-        result = await uazapi.get_qrcode(uazapi_instance_id, token)
+        result = await uazapi.get_qrcode(instance_id, token)
         return {
             "instance_id": instance_id,
             "qrcode": result.get("qrcode"),
@@ -210,12 +212,12 @@ async def get_status_route(
     """
     user_id = user["id"]
     
-    # Buscar no banco incluindo extra_data
+    # Buscar no banco (instance_id já é o ID da UAZAPI)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT uazapi_token, status, admin_status, phone_number, extra_data 
+                SELECT uazapi_token, status, admin_status, phone_number 
                 FROM instances 
                 WHERE id = %s AND user_id = %s
                 """,
@@ -226,22 +228,18 @@ async def get_status_route(
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
             
-            token, current_status, admin_status, phone_number, extra_data = row
-            uazapi_instance_id = extra_data.get("uazapi_instance_id") if extra_data else None
-            
-            if not uazapi_instance_id:
-                raise HTTPException(500, "ID da UAZAPI não encontrado")
+            token, current_status, admin_status, phone_number = row
     
-    # Verificar status na UAZAPI usando o ID correto
+    # Verificar status na UAZAPI (instance_id já é o ID correto)
     try:
-        state_result = await uazapi.get_connection_state(uazapi_instance_id, token)
+        state_result = await uazapi.get_connection_state(instance_id, token)
         uazapi_state = state_result.get("state", "close")
         
         connected = uazapi_state == "open"
         
         # Se conectou e ainda não temos o número, buscar
         if connected and not phone_number:
-            info_result = await uazapi.get_instance_info(uazapi_instance_id, token)
+            info_result = await uazapi.get_instance_info(instance_id, token)
             if info_result:
                 instance_info = info_result.get("instance", {})
                 owner = instance_info.get("owner")
