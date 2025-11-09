@@ -119,6 +119,10 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
     """
     url = f"https://{UAZAPI_HOST}/instance/connect"
     
+    log.info(f"🔄 Conectando instância: {instance_id}")
+    log.info(f"📤 URL: {url}")
+    log.info(f"📤 Header token (primeiros 20): {token[:20]}...")
+    
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.post(
@@ -129,20 +133,74 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
                 },
                 json={"instanceName": instance_id}
             )
+            
+            log.info(f"📥 Connect response status: {response.status_code}")
+            log.info(f"📥 Connect response: {response.text[:500]}")
+            
             response.raise_for_status()
             data = response.json()
+            
+            # Verificar se tem QR code
+            qrcode = data.get("qrcode", "")
+            paircode = data.get("paircode", "")
+            
             log.info(f"✅ Instância conectada: {instance_id}")
+            log.info(f"📊 QR code presente: {bool(qrcode)} (length: {len(qrcode) if qrcode else 0})")
+            log.info(f"📊 Pair code presente: {bool(paircode)}")
+            
+            if not qrcode and not paircode:
+                log.warning(f"⚠️ ATENÇÃO: Resposta não contém QR code nem pair code!")
+                log.warning(f"⚠️ Response completo: {data}")
+            
             return data
     except httpx.HTTPError as e:
         log.error(f"❌ Erro ao conectar instância: {e}")
+        log.error(f"❌ Response text: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         raise UazapiError(f"Falha ao conectar instância: {str(e)}")
+
+async def fetch_instance_info(instance_id: str, token: str) -> Dict[str, Any]:
+    """
+    Busca informações da instância incluindo QR code.
+    """
+    url = f"https://{UAZAPI_HOST}/instance/fetchInstances"
+    
+    log.info(f"🔄 Buscando info da instância: {instance_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.get(
+                url,
+                headers={"token": token},
+                params={"instanceName": instance_id}
+            )
+            
+            log.info(f"📥 FetchInstances status: {response.status_code}")
+            log.info(f"📥 FetchInstances response: {response.text[:500]}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            return data
+    except httpx.HTTPError as e:
+        log.error(f"❌ Erro ao buscar info da instância: {e}")
+        return {}
 
 async def get_qrcode(instance_id: str, token: str) -> Dict[str, Any]:
     """
-    Busca o QR Code de uma instância (via conexão).
-    Chama connect_instance internamente.
+    Busca o QR Code de uma instância.
+    Tenta primeiro connect, depois fetch.
     """
-    return await connect_instance(instance_id, token)
+    # Tentar connect primeiro
+    connect_data = await connect_instance(instance_id, token)
+    
+    if connect_data.get("qrcode"):
+        return connect_data
+    
+    # Se não veio QR code, tenta fetch
+    log.info(f"🔄 QR code não veio no connect, tentando fetch...")
+    fetch_data = await fetch_instance_info(instance_id, token)
+    
+    return fetch_data
 
 async def get_connection_state(instance_id: str, token: str) -> Dict[str, Any]:
     """
