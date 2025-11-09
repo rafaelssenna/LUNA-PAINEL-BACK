@@ -307,11 +307,15 @@ async def configure_instance(
         # Converter history para JSON string
         prompt_history_json = json.dumps(prompt_history)
         
-        # Atualizar instância
+        # Validar redirect_phone obrigatório
+        if not body.redirect_phone or not body.redirect_phone.strip():
+            raise HTTPException(status_code=400, detail="Número para handoff é obrigatório")
+        
+        # Atualizar instância - setar como 'active' para permitir que IA responda imediatamente
         conn.execute("""
             UPDATE instances
             SET 
-                admin_status = 'configured',
+                admin_status = 'active',
                 configured_by = %s,
                 configured_at = NOW(),
                 prompt = %s,
