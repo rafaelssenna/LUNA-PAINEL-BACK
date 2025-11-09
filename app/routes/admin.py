@@ -273,72 +273,84 @@ async def configure_instance(
     admin_id = int(admin['sub'].split(':')[1])
     
     with get_pool().connection() as conn:
-        # Buscar instância
-        instance = conn.execute(
-            "SELECT * FROM instances WHERE id = %s",
-            (instance_id,)
-        ).fetchone()
-        
-        if not instance:
-            raise HTTPException(status_code=404, detail="Instância não encontrada")
-        
-        # Salvar prompt anterior no histórico
-        old_prompt = instance['prompt']
-        
-        # Converter prompt_history de JSONB para list
-        prompt_history = []
-        if instance['prompt_history']:
-            if isinstance(instance['prompt_history'], str):
-                prompt_history = json.loads(instance['prompt_history'])
-            elif isinstance(instance['prompt_history'], list):
-                prompt_history = instance['prompt_history']
-            else:
-                prompt_history = []
-        
-        # Adicionar mudança ao histórico
-        if old_prompt:
-            prompt_history.append({
-                "changed_at": datetime.now(timezone.utc).isoformat(),
-                "changed_by": admin_id,
-                "old_prompt": old_prompt,
-                "new_prompt": body.prompt
-            })
-        
-        # Converter history para JSON string
-        prompt_history_json = json.dumps(prompt_history)
-        
-        # Validar redirect_phone obrigatório
-        if not body.redirect_phone or not body.redirect_phone.strip():
-            raise HTTPException(status_code=400, detail="Número para handoff é obrigatório")
-        
-        # Atualizar instância - setar como 'active' para permitir que IA responda imediatamente
-        conn.execute("""
-            UPDATE instances
-            SET 
-                admin_status = 'active',
-                configured_by = %s,
-                configured_at = NOW(),
-                prompt = %s,
-                admin_notes = %s,
-                prompt_history = %s::jsonb,
-                redirect_phone = %s,
-                updated_at = NOW()
-            WHERE id = %s
-        """, (admin_id, body.prompt, body.notes, prompt_history_json, body.redirect_phone, instance_id))
-        
-        # Registrar ação
-        conn.execute("""
-            INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description)
-            VALUES (%s, 'configure_instance', 'instance', %s, 'Prompt configurado e instância ativada')
-        """, (admin_id, instance_id))
-        
-        # Notificar usuário
-        conn.execute("""
-            INSERT INTO notifications (recipient_type, recipient_id, type, title, message)
-            VALUES ('user', %s, 'instance_configured', 'Sua Luna está ativa!',
-                    'Sua Luna foi configurada pela equipe Helsen e já está operacional!')
-        """, (instance['user_id'],))
-        
+        with conn.cursor() as cur:
+            # Buscar instância
+            cur.execute(
+                "SELECT * FROM instances WHERE id = %s",
+                (instance_id,)
+            )
+            instance = cur.fetchone()
+            
+            if not instance:
+                raise HTTPException(status_code=404, detail="Instância não encontrada")
+            
+            # Salvar prompt anterior no histórico
+            old_prompt = instance['prompt']
+            
+            # Converter prompt_history de JSONB para list
+            prompt_history = []
+            if instance['prompt_history']:
+                if isinstance(instance['prompt_history'], str):
+                    prompt_history = json.loads(instance['prompt_history'])
+                elif isinstance(instance['prompt_history'], list):
+                    prompt_history = instance['prompt_history']
+                else:
+                    prompt_history = []
+            
+            # Adicionar mudança ao histórico
+            if old_prompt:
+                prompt_history.append({
+                    "changed_at": datetime.now(timezone.utc).isoformat(),
+                    "changed_by": admin_id,
+                    "old_prompt": old_prompt,
+                    "new_prompt": body.prompt
+                })
+            
+            # Converter history para JSON string
+            prompt_history_json = json.dumps(prompt_history)
+            
+            # Validar redirect_phone obrigatório
+            if not body.redirect_phone or not body.redirect_phone.strip():
+                raise HTTPException(status_code=400, detail="Número para handoff é obrigatório")
+            
+            log.info(f"🔧 [ADMIN] Configurando instância {instance_id}")
+            log.info(f"   - Prompt: {len(body.prompt)} caracteres")
+            log.info(f"   - Redirect Phone: {body.redirect_phone}")
+            log.info(f"   - Admin Status: active")
+            
+            # Atualizar instância - setar como 'active' para permitir que IA responda imediatamente
+            cur.execute("""
+                UPDATE instances
+                SET 
+                    admin_status = 'active',
+                    configured_by = %s,
+                    configured_at = NOW(),
+                    prompt = %s,
+                    admin_notes = %s,
+                    prompt_history = %s::jsonb,
+                    redirect_phone = %s,
+                    updated_at = NOW()
+                WHERE id = %s
+            """, (admin_id, body.prompt, body.notes, prompt_history_json, body.redirect_phone, instance_id))
+            
+            # Registrar ação
+            cur.execute("""
+                INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description)
+                VALUES (%s, 'configure_instance', 'instance', %s, 'Prompt configurado e instância ativada')
+            """, (admin_id, instance_id))
+            
+            # Notificar usuário
+            cur.execute("""
+                INSERT INTO notifications (recipient_type, recipient_id, type, title, message)
+                VALUES ('user', %s, 'instance_configured', 'Sua Luna está ativa!',
+                        'Sua Luna foi configurada pela equipe Helsen e já está operacional!')
+            """, (instance['user_id'],))
+            
+            # ✅ COMMIT DAS MUDANÇAS!
+            conn.commit()
+            
+            log.info(f"✅ [ADMIN] Instância {instance_id} configurada e ativada com sucesso!")
+            
         return {"ok": True, "message": "Instância configurada com sucesso"}
 
 @router.post("/instances/{instance_id}/suspend")
