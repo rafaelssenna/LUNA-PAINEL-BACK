@@ -49,39 +49,49 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
     
     # Testar diferentes formatos de autenticação
     test_configs = [
-        # (endpoint_path, auth_header_dict)
-        ("/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
-        ("/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}),
-        ("/instance/create", {"x-api-key": UAZAPI_ADMIN_TOKEN}),
-        ("/instance/create", {"admin_token": UAZAPI_ADMIN_TOKEN}),
-        ("/instance/create", {"global_apikey": UAZAPI_ADMIN_TOKEN}),
-        ("/instance/create", {"api-key": UAZAPI_ADMIN_TOKEN}),  # Com hífen
-        ("/instance/create", {"Api-Key": UAZAPI_ADMIN_TOKEN}),  # Capitalizado
-        ("/instance/create", {"token": UAZAPI_ADMIN_TOKEN}),  # Simples
+        # (endpoint_path, auth_header_dict, body_extras_dict)
+        # Headers
+        ("/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}, {}),
+        ("/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}, {}),
+        ("/instance/create", {"x-api-key": UAZAPI_ADMIN_TOKEN}, {}),
+        # Token no BODY
+        ("/instance/create", {}, {"apikey": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {}, {"token": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {}, {"admin_token": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {}, {"global_apikey": UAZAPI_ADMIN_TOKEN}),
+        # Header + Body
+        ("/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}, {"apikey": UAZAPI_ADMIN_TOKEN}),
     ]
     
     last_error = None
     
-    for idx, (endpoint_path, auth_headers) in enumerate(test_configs):
+    for idx, (endpoint_path, auth_headers, body_extras) in enumerate(test_configs):
         full_url = f"https://{UAZAPI_HOST}{endpoint_path}"
         
         # Mesclar headers base com headers de autenticação
         full_headers = {**base_headers, **auth_headers}
         
+        # Mesclar body base com extras de auth
+        body = {
+            "instanceName": instance_name,
+            "qrcode": True,
+            "integration": "WHATSAPP-BAILEYS",
+            **body_extras
+        }
+        
+        auth_location = "header" if auth_headers else "body"
+        auth_key = list(auth_headers.keys())[0] if auth_headers else list(body_extras.keys())[0] if body_extras else "none"
+        
         log.info(f"🔄 Tentativa {idx + 1}/{len(test_configs)}")
         log.info(f"   URL: {full_url}")
-        log.info(f"   Auth header: {list(auth_headers.keys())[0]}")
+        log.info(f"   Auth em: {auth_location} ({auth_key})")
         
         try:
             async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
                 response = await client.post(
                     full_url,
                     headers=full_headers,
-                    json={
-                        "instanceName": instance_name,
-                        "qrcode": True,
-                        "integration": "WHATSAPP-BAILEYS"
-                    }
+                    json=body
                 )
             
                 log.info(f"📥 Response status: {response.status_code}")
@@ -91,8 +101,10 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
                 data = response.json()
                 log.info(f"✅ Instância criada na UAZAPI: {instance_name}")
                 log.info(f"✅ Response data keys: {list(data.keys())}")
-                log.info(f"✅ Auth header que funcionou: {list(auth_headers.keys())[0]}")
-                log.info(f"✅ Endpoint que funcionou: {endpoint_path}")
+                log.info(f"✅ Configuração que funcionou:")
+                log.info(f"   - Endpoint: {endpoint_path}")
+                log.info(f"   - Auth location: {auth_location}")
+                log.info(f"   - Auth key: {auth_key}")
                 return data
                 
         except httpx.HTTPStatusError as e:
@@ -102,9 +114,11 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
                 continue  # Tentar próxima configuração
             # Se foi a última tentativa, raise
             log.error(f"❌ TODAS as {len(test_configs)} tentativas falharam!")
+            log.error(f"❌ Testamos token em: header e body")
             log.error(f"❌ Último status: {e.response.status_code}")
             log.error(f"❌ Último response: {e.response.text[:500]}")
-            raise UazapiError(f"Falha ao criar instância após {len(test_configs)} tentativas. Verifique token e endpoint no painel UAZAPI.")
+            log.error(f"❌ AÇÃO: Verifique se o token '{UAZAPI_ADMIN_TOKEN[:10]}...' está ATIVO no painel UAZAPI")
+            raise UazapiError(f"Token rejeitado após {len(test_configs)} tentativas (header + body). Verifique se está ativo no painel.")
         except Exception as e:
             last_error = e
             log.error(f"❌ Erro na tentativa {idx + 1}: {type(e).__name__}: {e}")
