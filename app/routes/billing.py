@@ -55,41 +55,33 @@ def _billing_key_from_user(user: Dict[str, Any]) -> str:
     """
     Monta um ``billing_key`` a partir do JWT do usuário.
 
-    PRIORIDADE:
-      1) INSTÂNCIA: se vier `instance_id` OU `token`, usamos SEMPRE iid:<...>.
-      2) Usuário (fallback): uid:<id> a partir de sub='user:<id>'.
-      3) E-mail (fallback): ue:<hmac(email)> para não expor PII.
+    NOVA PRIORIDADE (baseada em e-mail):
+      1) E-MAIL: identificador principal (email:<email_lowercase>)
+      2) Fallback legado: token/instance_id para compatibilidade
 
-    Se nada for suficiente: 401.
+    O sistema é billing por e-mail: cada e-mail pode ter UMA instância.
     """
-    token = (user.get("token") or user.get("instance_token") or "").strip()
-    host = (user.get("host") or "").strip()
-    iid = (user.get("instance_id") or "") or ""  # pode vir None/''
+    # 1) PRIORIDADE: E-mail (identificador principal)
+    email = (user.get("email") or user.get("user_email") or "").strip().lower()
+    if email:
+        from app.services.billing import canonical_email_key
+        return canonical_email_key(email)
 
-    # 1) Preferimos SEMPRE chave por instância (iid:...)
-    if iid or token:
-        # canonical_instance_key já prefixa iid:
-        return canonical_instance_key(iid or token)
-
-    # 2) JWT de usuário: tenta 'sub' no formato 'user:'
+    # 2) Fallback: JWT de usuário com sub='user:<id>'
     sub = str(user.get("sub") or "")
     if sub.startswith("user:"):
         uid = sub.split(":", 1)[1]
         if uid:
             return f"uid:{uid}"
 
-    # 3) Fallback: usa e-mail com HMAC-SHA256 (BILLING_SALT) para não expor PII.
-    email = (user.get("email") or user.get("user_email") or "").strip().lower()
-    if email:
-        import hashlib
-        import hmac
-
-        salt = (os.getenv("BILLING_SALT") or "luna").encode()
-        digest = hmac.new(salt, email.encode(), hashlib.sha256).hexdigest()
-        return f"ue:{digest}"
+    # 3) Fallback legado: instância (para compatibilidade)
+    token = (user.get("token") or user.get("instance_token") or "").strip()
+    iid = (user.get("instance_id") or "") or ""
+    if iid or token:
+        return canonical_instance_key(iid or token)
 
     # Sem dados suficientes.
-    raise HTTPException(status_code=401, detail="JWT inválido: sem token/host/email/sub")
+    raise HTTPException(status_code=401, detail="JWT inválido: sem email/token/sub")
 
 
 def _safe_get_status(bkey: str) -> Dict[str, Any]:
