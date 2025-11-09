@@ -500,9 +500,11 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
                 log.info(f"🚀 [BUFFER] Processando {len(entry['texts'])} mensagem(s): \"{combined_text[:100]}...\"")
-                log.info(f"🔄 [BUFFER] Chamando background_tasks.add_task(process_message)...")
-                background_tasks.add_task(process_message, instance_id, number, combined_text)
-                log.info(f"✅ [BUFFER] Task adicionada ao background")
+                log.info(f"🔄 [BUFFER] Criando task para processar mensagem...")
+                # Usar asyncio.create_task ao invés de background_tasks
+                # porque background_tasks só executa APÓS resposta HTTP
+                asyncio.create_task(process_message(instance_id, number, combined_text))
+                log.info(f"✅ [BUFFER] Task criada e iniciada")
         
         task = asyncio.create_task(process_buffered())
         entry["timer"] = task
@@ -516,9 +518,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
                 log.info(f"🚀 [BUFFER] Processando: \"{combined_text[:100]}...\"")
-                log.info(f"🔄 [BUFFER] Chamando background_tasks.add_task(process_message)...")
-                background_tasks.add_task(process_message, instance_id, number, combined_text)
-                log.info(f"✅ [BUFFER] Task adicionada ao background")
+                log.info(f"🔄 [BUFFER] Criando task para processar mensagem...")
+                # Usar asyncio.create_task ao invés de background_tasks
+                asyncio.create_task(process_message(instance_id, number, combined_text))
+                log.info(f"✅ [BUFFER] Task criada e iniciada")
         
         task = asyncio.create_task(process_buffered())
         pending_messages[key] = {
