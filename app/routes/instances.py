@@ -80,17 +80,23 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         # 1. Criar instância na UAZAPI
         result = await uazapi.create_instance(instance_name)
         instance_data = result.get("instance", {})
+        instance_id = instance_data.get("instanceId")  # ID real da instância
         instance_token = instance_data.get("token")
+        
+        if not instance_id:
+            raise HTTPException(500, "UAZAPI não retornou ID da instância")
         
         if not instance_token:
             raise HTTPException(500, "UAZAPI não retornou token da instância")
         
-        # 2. Configurar webhook automaticamente
-        try:
-            await uazapi.set_webhook(instance_name, instance_token, WEBHOOK_URL)
-            log.info(f"✅ Webhook configurado para {instance_name}")
-        except Exception as e:
-            log.warning(f"⚠️ Falha ao configurar webhook para {instance_name}: {e}")
+        log.info(f"✅ Instância criada - ID: {instance_id}, Name: {instance_name}")
+        
+        # 2. Configurar webhook automaticamente (TODO: verificar endpoint correto)
+        # try:
+        #     await uazapi.set_webhook(instance_id, instance_token, WEBHOOK_URL)
+        #     log.info(f"✅ Webhook configurado para {instance_id}")
+        # except Exception as e:
+        #     log.warning(f"⚠️ Falha ao configurar webhook para {instance_id}: {e}")
         
         # 3. Salvar no banco
         with get_pool().connection() as conn:
@@ -103,7 +109,7 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                     ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
                     """,
                     (
-                        instance_name,
+                        instance_id,  # ← Usar ID real da UAZAPI (ex: re1ba235d7c3350)
                         user_id,
                         instance_token,
                         uazapi.UAZAPI_HOST,
@@ -114,15 +120,18 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                 conn.commit()
         
         # 4. Buscar QR Code
-        qr_data = None
-        try:
-            qr_result = await uazapi.get_qrcode(instance_name, instance_token)
-            qr_data = qr_result.get("qrcode")
-        except Exception as e:
-            log.warning(f"⚠️ Falha ao buscar QR code inicial: {e}")
+        qr_data = instance_data.get("qrcode")  # QR code já vem na resposta!
+        
+        if not qr_data:
+            # Se não veio, tenta buscar
+            try:
+                qr_result = await uazapi.get_qrcode(instance_id, instance_token)
+                qr_data = qr_result.get("qrcode")
+            except Exception as e:
+                log.warning(f"⚠️ Falha ao buscar QR code: {e}")
         
         return {
-            "instance_id": instance_name,
+            "instance_id": instance_id,  # ← Retornar ID real
             "status": "disconnected",
             "qrcode": qr_data,
             "uazapi_token": instance_token,  # ← Retornar token para autenticação
