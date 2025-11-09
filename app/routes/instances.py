@@ -29,7 +29,9 @@ WEBHOOK_URL = f"{BACKEND_URL.rstrip('/')}/api/webhook"
 class CreateInstanceOut(BaseModel):
     instance_id: str
     status: str
+    admin_status: str
     qrcode: Optional[str] = None
+    uazapi_token: Optional[str] = None
     message: str
 
 class InstanceStatusOut(BaseModel):
@@ -102,9 +104,19 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                         
                         if qr_data:
                             log.info(f"✅ [CREATE] QR code obtido para instância existente!")
+                            
+                            # Buscar admin_status
+                            cur.execute(
+                                "SELECT admin_status FROM instances WHERE id = %s",
+                                (existing_id,)
+                            )
+                            admin_row = cur.fetchone()
+                            admin_status = admin_row["admin_status"] if admin_row else "pending_config"
+                            
                             return CreateInstanceOut(
                                 instance_id=existing_id,
                                 status=existing_status,
+                                admin_status=admin_status,
                                 qrcode=qr_data,
                                 uazapi_token=existing_token,
                                 message="Instância encontrada! Escaneie o QR Code."
@@ -204,6 +216,7 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         response_data = {
             "instance_id": db_instance_id,
             "status": "disconnected",
+            "admin_status": "pending_config",
             "qrcode": qr_data if qr_data else "",
             "uazapi_token": instance_token,
             "message": "Instância criada! Escaneie o QR Code com seu WhatsApp."
@@ -449,4 +462,70 @@ async def list_my_instances(request: Request, user: Dict[str, Any] = Depends(get
                     }
                     for row in rows
                 ]
+            }
+
+@router.get("/my-status")
+async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Retorna o status da instância do usuário logado.
+    Usado pelo frontend para verificar se WhatsApp está conectado e se admin já configurou.
+    """
+    user_id = user["id"]
+    
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, status, admin_status, phone_number, prompt, redirect_phone
+                FROM instances
+                WHERE user_id = %s
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (user_id,)
+            )
+            row = cur.fetchone()
+            
+            if not row:
+                return {
+                    "has_instance": False,
+                    "message": "Você ainda não criou uma instância. Crie uma para começar!"
+                }
+            
+            instance_status = row["status"]
+            admin_status = row["admin_status"]
+            phone_number = row["phone_number"]
+            has_prompt = bool(row["prompt"])
+            has_redirect = bool(row["redirect_phone"])
+            
+            # Determinar mensagem baseada no status
+            if instance_status != "connected":
+                message = "⏳ WhatsApp não conectado. Escaneie o QR Code para continuar."
+                banner_type = "warning"
+            elif admin_status == "pending_config":
+                message = "✅ WhatsApp conectado! ⏳ Aguardando configuração da equipe Helsen."
+                banner_type = "info"
+            elif admin_status in ["configured", "active"]:
+                message = "🎉 Sua Luna está ativa! Suas conversas estão sendo gerenciadas pela IA."
+                banner_type = "success"
+            elif admin_status == "suspended":
+                message = "⚠️ Instância suspensa. Entre em contato com o suporte."
+                banner_type = "error"
+            else:
+                message = "Status desconhecido. Entre em contato com o suporte."
+                banner_type = "warning"
+            
+            return {
+                "has_instance": True,
+                "instance_id": row["id"],
+                "status": instance_status,
+                "admin_status": admin_status,
+                "phone_number": phone_number,
+                "is_connected": instance_status == "connected",
+                "is_configured": admin_status in ["configured", "active"],
+                "is_active": admin_status == "active",
+                "has_prompt": has_prompt,
+                "has_redirect": has_redirect,
+                "message": message,
+                "banner_type": banner_type
             }
