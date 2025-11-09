@@ -68,8 +68,8 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
             
             if existing:
                 return CreateInstanceOut(
-                    instance_id=existing[0],
-                    status=existing[1],
+                    instance_id=existing["id"],
+                    status=existing["status"],
                     message="Você já possui uma instância. Use /instances/{id}/qrcode para obter novo QR Code."
                 )
     
@@ -191,7 +191,8 @@ async def get_qrcode_route(
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
             
-            token, status = row
+            token = row["uazapi_token"]
+            status = row["status"]
             
             if status == "connected":
                 return {
@@ -240,7 +241,10 @@ async def get_status_route(
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
             
-            token, current_status, admin_status, phone_number = row
+            token = row["uazapi_token"]
+            current_status = row["status"]
+            admin_status = row["admin_status"]
+            phone_number = row["phone_number"]
     
     # Verificar status na UAZAPI (instance_id já é o ID correto)
     try:
@@ -326,7 +330,7 @@ async def delete_instance_route(
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
             
-            token = row[0]
+            token = row["uazapi_token"]
     
     # Deletar na UAZAPI
     try:
@@ -365,11 +369,11 @@ async def list_my_instances(request: Request, user: Dict[str, Any] = Depends(get
             return {
                 "instances": [
                     {
-                        "id": row[0],
-                        "status": row[1],
-                        "admin_status": row[2],
-                        "phone_number": row[3],
-                        "created_at": row[4].isoformat() if row[4] else None
+                        "id": row["id"],
+                        "status": row["status"],
+                        "admin_status": row["admin_status"],
+                        "phone_number": row["phone_number"],
+                        "created_at": row["created_at"].isoformat() if row.get("created_at") else None
                     }
                     for row in rows
                 ]
