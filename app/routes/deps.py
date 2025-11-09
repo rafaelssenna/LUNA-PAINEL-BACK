@@ -9,7 +9,7 @@ JWT_ALG = os.getenv("JWT_ALGORITHM", "HS256")
 def get_current_user(request: Request) -> dict:
     """
     Autentica usuário do sistema (não instância) via JWT.
-    Retorna dict com dados do usuário.
+    Retorna dict com dados do usuário incluindo 'id'.
     """
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
@@ -23,6 +23,13 @@ def get_current_user(request: Request) -> dict:
         sub = payload.get("sub", "")
         if not sub.startswith("user:"):
             raise HTTPException(401, "Token não é de usuário")
+        
+        # Extrair ID do sub (formato: "user:123")
+        try:
+            user_id = int(sub.split(":", 1)[1])
+            payload["id"] = user_id
+        except (IndexError, ValueError):
+            raise HTTPException(401, "Token inválido: sub malformado")
         
         return payload
     except pyjwt.ExpiredSignatureError:
