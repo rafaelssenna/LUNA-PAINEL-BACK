@@ -156,12 +156,13 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                     cur.execute(
                         """
                         INSERT INTO instances (
-                            id, user_id, uazapi_token, uazapi_host,
+                            id, instance_id, user_id, uazapi_token, uazapi_host,
                             status, admin_status, created_at
-                        ) VALUES (%s, %s, %s, %s, %s, %s, NOW())
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
                         """,
                         (
-                            db_instance_id,  # ← Usar ID da UAZAPI diretamente
+                            db_instance_id,  # ← ID principal
+                            db_instance_id,  # ← instance_id (duplicação)
                             user_id,
                             instance_token,
                             uazapi.UAZAPI_HOST,
