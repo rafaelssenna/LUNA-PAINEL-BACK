@@ -18,9 +18,12 @@ from app.routes.deps import get_current_user
 router = APIRouter()
 log = logging.getLogger("uvicorn.error")
 
-# URL do backend para webhook
-BACKEND_URL = os.getenv("PUBLIC_BASE_URL", "https://lunahia.com.br")
-WEBHOOK_URL = f"{BACKEND_URL.rstrip('/')}/api/webhook"
+# URL do webhook (IMPORTANTE: Deve ser a URL do BACKEND, não do frontend!)
+# Se não estiver no .env, usa o padrão do Railway
+WEBHOOK_URL = os.getenv("WEBHOOK_URL", "https://web-production-3bc4c.up.railway.app/api/webhook")
+
+# Logar para debug
+log.info(f"🔗 [WEBHOOK] URL configurada: {WEBHOOK_URL}")
 
 # ==============================================================================
 # MODELOS
