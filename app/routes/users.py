@@ -1,5 +1,5 @@
 from __future__ import annotations
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from datetime import datetime, timedelta, timezone
 import logging
 import os
@@ -14,6 +14,7 @@ from app.services.users import (
     verify_password,
     touch_last_login,
 )
+from app.pg import get_pool
 
 # Tenta integrar com serviço de instâncias, se existir
 try:
@@ -71,6 +72,21 @@ class InstanceConnectIn(BaseModel):
     token: str
 
 
+class InstanceData(BaseModel):
+    """Dados da instância do usuário."""
+    id: str
+    token: str
+    status: str
+    phone_number: Optional[str] = None
+
+
+class LoginOut(BaseModel):
+    """Resposta do login com JWT da conta e instância (se existir)."""
+    jwt: str  # JWT da conta do usuário
+    instance_jwt: Optional[str] = None  # JWT da instância (se existir)
+    instance: Optional[InstanceData] = None  # Dados da instância
+
+
 # ------------------------------------------------------------------------------
 # Helpers de autenticação
 # ------------------------------------------------------------------------------
@@ -114,22 +130,132 @@ def register(body: RegisterIn):
     return {"jwt": token, "profile": {"email": user["email"]}}
 
 
-@router.post("/login")
-def login(body: LoginIn):
-    try:
-        u = get_user_by_email(body.email)
-        # >>> Correção: verify_password(plain, hashed)
-        if not u or not verify_password(body.password, u.get("password_hash") or ""):
-            raise HTTPException(401, "Credenciais inválidas")
+@router.post("/login", response_model=LoginOut)
+def login(body: LoginIn) -> LoginOut:
+    """
+    Login de usuário com e-mail e senha.
+    Retorna JWT da conta + token da instância (se existir).
+    """
+    email = body.email.strip().lower()
+    password = body.password.strip()
+    
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            # Buscar usuário
+            cur.execute(
+                "SELECT id, email, password FROM users WHERE email = %s",
+                (email,)
+            )
+            row = cur.fetchone()
+            
+            if not row:
+                raise HTTPException(status_code=401, detail="Credenciais inválidas")
+            
+            user_id = row["id"]
+            stored_password = row["password"]
+            
+            if not verify_password(password, stored_password):
+                raise HTTPException(status_code=401, detail="Credenciais inválidas")
+            
+            # Buscar instância do usuário (se existir)
+            cur.execute(
+                """
+                SELECT id, uazapi_token, status, phone_number 
+                FROM instances 
+                WHERE user_id = %s 
+                LIMIT 1
+                """,
+                (user_id,)
+            )
+            instance = cur.fetchone()
+            
+            # Gerar JWT da conta
+            payload = {
+                "sub": f"user:{user_id}",
+                "email": email,
+                "user_email": email,
+                "id": user_id,
+                "iat": datetime.utcnow(),
+                "exp": datetime.utcnow() + timedelta(days=30)
+            }
+            
+            account_jwt = jwt.encode(payload, JWT_SECRET, algorithm=JWT_ALG)
+            
+            # Se tem instância, gerar JWT dela também
+            instance_jwt = None
+            instance_data = None
+            
+            if instance:
+                instance_token = instance["uazapi_token"]
+                instance_id = instance["id"]
+                
+                # Gerar JWT da instância (para usar nas rotas)
+                instance_payload = {
+                    "token": instance_token,
+                    "instance_token": instance_token,
+                    "instance_id": instance_id,
+                    "host": os.getenv("UAZAPI_HOST", ""),
+                    "email": email,
+                    "id": user_id,
+                    "iat": datetime.utcnow(),
+                    "exp": datetime.utcnow() + timedelta(days=30)
+                }
+                
+                instance_jwt = jwt.encode(instance_payload, JWT_SECRET, algorithm=JWT_ALG)
+                instance_data = {
+                    "id": instance_id,
+                    "token": instance_token,
+                    "status": instance["status"],
+                    "phone_number": instance["phone_number"]
+                }
+            
+            return LoginOut(
+                jwt=account_jwt,
+                instance_jwt=instance_jwt,
+                instance=instance_data
+            )
 
-        touch_last_login(u["id"])
-        token = _issue_user_jwt({"id": u["id"], "email": u["email"]})
-        return {"jwt": token, "profile": {"email": u["email"]}}
-    except HTTPException:
-        raise
-    except Exception:
-        log.exception("Erro no login")
-        raise HTTPException(500, "Erro interno")
+
+@router.get("/instance")
+def get_instance(request: Request):
+    """
+    Busca a instância do usuário autenticado.
+    """
+    # 1) Extrai e valida JWT, obtém e-mail
+    payload = _jwt_payload_from_request(request)
+    email = str(payload.get("email") or "").strip().lower()
+    if not email:
+        raise HTTPException(401, "JWT sem e-mail. Faça login novamente.")
+
+    # 2) Busca usuário no banco
+    u = get_user_by_email(email)
+    if not u:
+        raise HTTPException(404, "Usuário não encontrado")
+
+    # 3) Busca instância do usuário (se existir)
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, uazapi_token, status, phone_number 
+                FROM instances 
+                WHERE user_id = %s 
+                LIMIT 1
+                """,
+                (u["id"],)
+            )
+            instance = cur.fetchone()
+
+            if instance:
+                instance_data = {
+                    "id": instance["id"],
+                    "token": instance["uazapi_token"],
+                    "status": instance["status"],
+                    "phone_number": instance["phone_number"]
+                }
+                return {"instance": instance_data}
+            else:
+                return {"instance": None}
 
 
 # ------------------------------------------------------------------------------
