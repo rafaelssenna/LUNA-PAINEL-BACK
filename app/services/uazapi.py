@@ -319,35 +319,98 @@ async def set_webhook(instance_id: str, token: str, webhook_url: str) -> Dict[st
     """
     Configura o webhook para receber mensagens.
     
+    Conforme docs.uazapi.com - MODO SIMPLES:
+    - Endpoint: POST /webhook
+    - Header: token (token da instância)
+    - Sem action/id (API cuida automaticamente)
+    - Events: ["messages", "messages_update"]
+    - excludeMessages: ["wasSentByApi", "isGroupYes"] para evitar loops e grupos
+    
     Args:
-        instance_id: ID da instância
+        instance_id: ID da instância (para logs)
         token: Token da instância
         webhook_url: URL completa do webhook (ex: https://backend.com/api/webhook)
     """
-    url = f"https://{UAZAPI_HOST}/webhook/set/{instance_id}"
+    url = f"https://{UAZAPI_HOST}/webhook"
+    
+    log.info(f"🔗 [WEBHOOK] Configurando webhook para instância {instance_id}")
+    log.info(f"🔗 [WEBHOOK] URL: {url}")
+    log.info(f"🔗 [WEBHOOK] Webhook URL: {webhook_url}")
     
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.post(
                 url,
-                headers={"apikey": token},
+                headers={
+                    "Content-Type": "application/json",
+                    "token": token  # Token da instância (não admintoken)
+                },
                 json={
                     "enabled": True,
                     "url": webhook_url,
                     "events": [
-                        "MESSAGES_UPSERT",
-                        "MESSAGES_UPDATE",
-                        "CONNECTION_UPDATE"
+                        "messages",         # Novas mensagens
+                        "messages_update"   # Atualizações de mensagens
+                    ],
+                    "excludeMessages": [
+                        "wasSentByApi",  # Evitar loops (mensagens enviadas pela API)
+                        "isGroupYes"     # Ignorar mensagens de grupos
                     ]
                 }
             )
+            
+            log.info(f"📥 [WEBHOOK] Response status: {response.status_code}")
+            log.info(f"📥 [WEBHOOK] Response body: {response.text[:500]}")
+            
             response.raise_for_status()
             data = response.json()
-            log.info(f"✅ Webhook configurado para {instance_id}: {webhook_url}")
+            
+            log.info(f"✅ [WEBHOOK] Webhook configurado com sucesso!")
+            log.info(f"   - Instância: {instance_id}")
+            log.info(f"   - URL: {webhook_url}")
+            log.info(f"   - Eventos: messages, messages_update")
+            log.info(f"   - Filtros: wasSentByApi, isGroupYes")
+            
             return data
     except httpx.HTTPError as e:
-        log.error(f"❌ Erro ao configurar webhook: {e}")
+        log.error(f"❌ [WEBHOOK] Erro HTTP: {e}")
+        log.error(f"❌ [WEBHOOK] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         raise UazapiError(f"Falha ao configurar webhook: {str(e)}")
+
+async def get_webhook(instance_id: str, token: str) -> Optional[Dict[str, Any]]:
+    """
+    Verifica o webhook configurado para a instância.
+    
+    Conforme docs.uazapi.com:
+    - Endpoint: GET /webhook
+    - Header: token (token da instância)
+    - Retorna lista de webhooks configurados
+    """
+    url = f"https://{UAZAPI_HOST}/webhook"
+    
+    log.info(f"🔍 [WEBHOOK] Verificando webhook da instância {instance_id}")
+    
+    try:
+        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            response = await client.get(
+                url,
+                headers={"token": token}
+            )
+            
+            log.info(f"📥 [WEBHOOK] Response status: {response.status_code}")
+            log.info(f"📥 [WEBHOOK] Response body: {response.text[:500]}")
+            
+            response.raise_for_status()
+            data = response.json()
+            
+            log.info(f"✅ [WEBHOOK] Webhook verificado:")
+            log.info(f"   - Dados: {data}")
+            
+            return data
+    except httpx.HTTPError as e:
+        log.error(f"❌ [WEBHOOK] Erro ao verificar webhook: {e}")
+        log.error(f"❌ [WEBHOOK] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+        return None
 
 async def delete_instance(instance_id: str, token: str) -> Dict[str, Any]:
     """
