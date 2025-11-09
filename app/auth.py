@@ -85,6 +85,8 @@ def login(body: LoginIn) -> LoginOut:
       - host: host/base da UAZAPI (obrigatório; vem do body ou de UAZAPI_HOST)
       - instance_id (quando o 'token' tiver cara de UUID)
       - claims auxiliares (label/number_hint) para a UI
+    
+    VALIDAÇÃO: Impede conectar o mesmo número de telefone em múltiplas instâncias
     """
     raw_token = (body.token or "").strip()
     if not raw_token:
@@ -99,6 +101,36 @@ def login(body: LoginIn) -> LoginOut:
 
     # normaliza host (sem protocolo / barras finais)
     host = host.replace("https://", "").replace("http://", "").strip("/")
+    
+    # VALIDAÇÃO: Verificar se este token já está em uso
+    from app.pg import get_pool
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se este token já está cadastrado
+                cur.execute(
+                    "SELECT id, phone_number, status FROM instances WHERE uazapi_token = %s",
+                    (raw_token,)
+                )
+                existing = cur.fetchone()
+                
+                if existing and existing['phone_number']:
+                    # Token já existe e tem número conectado
+                    phone = existing['phone_number']
+                    status = existing['status']
+                    
+                    # Se está conectado, está em uso
+                    if status == 'connected':
+                        raise HTTPException(
+                            status_code=400,
+                            detail=f"Este número ({phone}) já está conectado em outra instância. Não é possível usar o mesmo número em múltiplas instâncias."
+                        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        # Se falhar a validação, permite continuar (não bloqueia login)
+        import logging
+        logging.getLogger("uvicorn.error").warning(f"[AUTH] Falha ao validar duplicação: {e}")
 
     # Se parecer um UUID, guardamos como instance_id
     instance_id: Optional[str] = raw_token if UUID_RE.match(raw_token) else None
