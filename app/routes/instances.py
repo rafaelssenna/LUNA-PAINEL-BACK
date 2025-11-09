@@ -244,6 +244,12 @@ async def get_qrcode_route(
 ):
     """
     Retorna o QR Code de uma instância.
+    
+    Fluxo UAZAPI (conforme docs.uazapi.com):
+    1. POST /instance/connect gera QR Code (válido por 2 minutos)
+    2. Status fica "connecting" após escanear
+    3. Status muda para "connected" quando finalizado
+    4. Se QR expirar, este endpoint regerará automaticamente
     """
     user_id = user["id"]
     
@@ -269,15 +275,22 @@ async def get_qrcode_route(
                     "message": "WhatsApp já está conectado!"
                 }
     
-    # Buscar QR Code (instance_id já é o ID da UAZAPI)
+    # Buscar/Regerar QR Code (sempre chama /instance/connect para QR novo)
     try:
+        log.info(f"🔄 [QRCODE] Gerando QR Code para instância {instance_id}")
         result = await uazapi.get_qrcode(instance_id, token)
+        
+        qrcode = result.get("qrcode", "")
+        log.info(f"📊 [QRCODE] QR Code gerado: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
+        
         return {
             "instance_id": instance_id,
-            "qrcode": result.get("qrcode"),
-            "status": result.get("status", "qr_code")
+            "qrcode": qrcode,
+            "status": result.get("status", "qr_code"),
+            "message": "QR Code válido por 2 minutos. Escaneie com WhatsApp Business."
         }
     except uazapi.UazapiError as e:
+        log.error(f"❌ [QRCODE] Erro ao gerar QR Code: {e}")
         raise HTTPException(500, str(e))
 
 @router.get("/{instance_id}/status", response_model=InstanceStatusOut)
@@ -321,7 +334,7 @@ async def get_status_route(
         
         state_result = await uazapi.get_connection_state(instance_id, token)
         
-        # Conforme docs UAZAPI: verificar campos 'status' e 'state'
+        # Conforme docs UAZAPI: status pode ser "disconnected", "connecting" ou "connected"
         uazapi_status = state_result.get("status", "")
         uazapi_state = state_result.get("state", "close")
         
@@ -329,10 +342,12 @@ async def get_status_route(
         log.info(f"   - status: {uazapi_status}")
         log.info(f"   - state: {uazapi_state}")
         
-        # Conectado se status="connected" OU state="open"
-        connected = (uazapi_status == "connected") or (uazapi_state == "open")
+        # Conectado APENAS se status="connected" E state="open"
+        # Durante "connecting" o usuário escaneou mas ainda não finalizou
+        is_connecting = (uazapi_status == "connecting")
+        connected = (uazapi_status == "connected") and (uazapi_state == "open")
         
-        log.info(f"📊 [STATUS] Conectado? {connected} | Tem phone_number no banco? {bool(phone_number)}")
+        log.info(f"📊 [STATUS] Connecting? {is_connecting} | Connected? {connected} | Tem phone_number? {bool(phone_number)}")
         
         # Se conectou e ainda não temos o número, buscar
         if connected and not phone_number:
