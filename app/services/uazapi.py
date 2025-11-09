@@ -146,9 +146,10 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
             response.raise_for_status()
             data = response.json()
             
-            # Verificar se tem QR code
-            qrcode = data.get("qrcode", "")
-            paircode = data.get("paircode", "")
+            # QR code está dentro de data["instance"]["qrcode"]
+            instance_data = data.get("instance", {})
+            qrcode = instance_data.get("qrcode", "")
+            paircode = instance_data.get("paircode", "")
             
             log.info(f"✅ [CONNECT] Resposta recebida")
             log.info(f"📊 [CONNECT] QR code: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
@@ -162,7 +163,13 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
                 log.warning(f"⚠️ [CONNECT] Nenhum QR code ou pair code na resposta!")
                 log.warning(f"⚠️ [CONNECT] Response completo: {data}")
             
-            return data
+            # Retornar o qrcode diretamente no nível superior para compatibilidade
+            return {
+                "qrcode": qrcode,
+                "paircode": paircode,
+                "status": instance_data.get("status", ""),
+                "connected": data.get("connected", False)
+            }
     except httpx.HTTPError as e:
         log.error(f"❌ [CONNECT] Erro HTTP: {e}")
         log.error(f"❌ [CONNECT] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
