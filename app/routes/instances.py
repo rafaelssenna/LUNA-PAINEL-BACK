@@ -42,7 +42,7 @@ class InstanceStatusOut(BaseModel):
 # ROTAS
 # ==============================================================================
 
-@router.post("/create", response_model=CreateInstanceOut)
+@router.post("/create")
 async def create_instance_route(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
     """
     Cria uma nova instância WhatsApp para o usuário logado.
