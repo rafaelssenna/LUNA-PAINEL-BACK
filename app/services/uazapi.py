@@ -108,7 +108,12 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
 async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
     """
     Conecta a instância e gera o QR Code.
-    Deve ser chamado após criar a instância para obter o QR code.
+    Endpoint oficial: POST /instance/connect
+    
+    Conforme docs.uazapi.com:
+    - Header: "token" com o token da instância
+    - Body vazio ou sem "phone" gera QR Code
+    - Body com "phone" gera código de pareamento
     
     Returns:
         {
@@ -119,23 +124,24 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
     """
     url = f"https://{UAZAPI_HOST}/instance/connect"
     
-    log.info(f"🔄 Conectando instância: {instance_id}")
-    log.info(f"📤 URL: {url}")
-    log.info(f"📤 Header token (primeiros 20): {token[:20]}...")
+    log.info(f"🔄 [CONNECT] Conectando instância: {instance_id}")
+    log.info(f"📤 [CONNECT] URL: {url}")
+    log.info(f"📤 [CONNECT] Header token: {token[:20]}...")
     
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+            # Não enviar phone para gerar QR Code
             response = await client.post(
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "token": token  # Header correto para instância
+                    "token": token  # Header da instância
                 },
-                json={"instanceName": instance_id}
+                json={}  # Body vazio = gera QR code
             )
             
-            log.info(f"📥 Connect response status: {response.status_code}")
-            log.info(f"📥 Connect response: {response.text[:500]}")
+            log.info(f"📥 [CONNECT] Status: {response.status_code}")
+            log.info(f"📥 [CONNECT] Response (primeiros 500): {response.text[:500]}")
             
             response.raise_for_status()
             data = response.json()
@@ -144,18 +150,22 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
             qrcode = data.get("qrcode", "")
             paircode = data.get("paircode", "")
             
-            log.info(f"✅ Instância conectada: {instance_id}")
-            log.info(f"📊 QR code presente: {bool(qrcode)} (length: {len(qrcode) if qrcode else 0})")
-            log.info(f"📊 Pair code presente: {bool(paircode)}")
+            log.info(f"✅ [CONNECT] Resposta recebida")
+            log.info(f"📊 [CONNECT] QR code: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
+            log.info(f"📊 [CONNECT] Pair code: presente={bool(paircode)}")
             
-            if not qrcode and not paircode:
-                log.warning(f"⚠️ ATENÇÃO: Resposta não contém QR code nem pair code!")
-                log.warning(f"⚠️ Response completo: {data}")
+            if qrcode:
+                log.info(f"🎉 [CONNECT] QR CODE GERADO COM SUCESSO!")
+            elif paircode:
+                log.info(f"🎉 [CONNECT] PAIR CODE GERADO: {paircode}")
+            else:
+                log.warning(f"⚠️ [CONNECT] Nenhum QR code ou pair code na resposta!")
+                log.warning(f"⚠️ [CONNECT] Response completo: {data}")
             
             return data
     except httpx.HTTPError as e:
-        log.error(f"❌ Erro ao conectar instância: {e}")
-        log.error(f"❌ Response text: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+        log.error(f"❌ [CONNECT] Erro HTTP: {e}")
+        log.error(f"❌ [CONNECT] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         raise UazapiError(f"Falha ao conectar instância: {str(e)}")
 
 async def fetch_instance_info(instance_id: str, token: str) -> Dict[str, Any]:
