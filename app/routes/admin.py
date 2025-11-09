@@ -589,6 +589,64 @@ async def update_prompt(
         log.error(f"Erro ao atualizar prompt: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+@router.delete("/instances/{instance_id}/memory")
+async def clear_instance_memory(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Limpar memória (histórico de mensagens) da IA
+    Útil quando o prompt é alterado e se quer começar do zero
+    """
+    
+    admin_id = int(admin['sub'].split(':')[1])
+    
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Verificar se instância existe
+                cur.execute("SELECT id, phone_number FROM instances WHERE id = %s", (instance_id,))
+                instance = cur.fetchone()
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+                
+                log.info(f"🧹 [ADMIN] Limpando memória da instância {instance_id}")
+                
+                # Contar mensagens antes
+                cur.execute("SELECT COUNT(*) FROM messages WHERE instance_id = %s", (instance_id,))
+                count_before = cur.fetchone()['count']
+                
+                # Deletar todas as mensagens
+                cur.execute("DELETE FROM messages WHERE instance_id = %s", (instance_id,))
+                
+                # Deletar todas as sessões
+                cur.execute("DELETE FROM sessions WHERE instance_id = %s", (instance_id,))
+                
+                # Registrar ação
+                cur.execute("""
+                    INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description, created_at)
+                    VALUES (%s, 'clear_memory', 'instance', %s, %s, NOW())
+                """, (admin_id, instance_id, f'Memória limpa - {count_before} mensagens deletadas'))
+                
+                conn.commit()
+                
+                log.info(f"✅ [ADMIN] Memória limpa: {count_before} mensagens deletadas")
+                
+        return {
+            "ok": True,
+            "message": f"Memória limpa com sucesso! {count_before} mensagens deletadas.",
+            "deleted_messages": count_before
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao limpar memória: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.get("/activity")
 async def get_activity(admin: Dict = Depends(get_current_admin)):
     """Log de atividades recentes"""
