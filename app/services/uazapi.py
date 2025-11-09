@@ -35,6 +35,11 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
     
     url = f"https://{UAZAPI_HOST}/instance/create"
     
+    log.info(f"🔄 Criando instância UAZAPI: {instance_name}")
+    log.info(f"🔄 URL: {url}")
+    log.info(f"🔄 Host: {UAZAPI_HOST}")
+    log.info(f"🔄 Token presente: {bool(UAZAPI_ADMIN_TOKEN)} (length: {len(UAZAPI_ADMIN_TOKEN)})")
+    
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.post(
@@ -46,13 +51,23 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
                     "integration": "WHATSAPP-BAILEYS"
                 }
             )
+            
+            log.info(f"📥 Response status: {response.status_code}")
+            log.info(f"📥 Response text: {response.text[:500]}")  # Primeiros 500 chars
+            
             response.raise_for_status()
             data = response.json()
             log.info(f"✅ Instância criada na UAZAPI: {instance_name}")
+            log.info(f"✅ Response data keys: {list(data.keys())}")
             return data
     except httpx.HTTPError as e:
-        log.error(f"❌ Erro ao criar instância na UAZAPI: {e}")
+        log.error(f"❌ Erro HTTP ao criar instância: {e}")
+        log.error(f"❌ Status code: {getattr(e.response, 'status_code', 'N/A')}")
+        log.error(f"❌ Response text: {getattr(e.response, 'text', 'N/A')[:500]}")
         raise UazapiError(f"Falha ao criar instância: {str(e)}")
+    except Exception as e:
+        log.error(f"❌ Erro inesperado ao criar instância: {type(e).__name__}: {e}")
+        raise UazapiError(f"Erro inesperado: {str(e)}")
 
 async def get_qrcode(instance_id: str, token: str) -> Dict[str, Any]:
     """
