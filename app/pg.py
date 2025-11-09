@@ -49,11 +49,19 @@ def init_schema():
     CREATE TABLE IF NOT EXISTS instances (
       id              TEXT PRIMARY KEY,
       user_id         INTEGER NOT NULL,
+      instance_id     TEXT,  -- Duplicação do id para compatibilidade
       uazapi_token    TEXT NOT NULL,
       uazapi_host     TEXT NOT NULL,
       status          TEXT NOT NULL DEFAULT 'disconnected',
       admin_status    TEXT NOT NULL DEFAULT 'pending_config',
       phone_number    TEXT,
+      phone_name      TEXT,
+      prompt          TEXT,
+      admin_notes     TEXT,
+      redirect_phone  TEXT,  -- Número para handoff
+      configured_by   INTEGER,  -- ID do admin que configurou
+      configured_at   TIMESTAMPTZ,
+      prompt_history  JSONB DEFAULT '[]'::jsonb,
       created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
       updated_at      TIMESTAMPTZ
     );
@@ -209,6 +217,156 @@ def init_schema():
 
     CREATE INDEX IF NOT EXISTS idx_messages_ts
       ON messages(timestamp DESC);
+    
+    -- =========================================
+    -- ADMIN USERS (administradores do sistema)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS admin_users (
+      id              SERIAL PRIMARY KEY,
+      email           TEXT NOT NULL UNIQUE,
+      password_hash   TEXT NOT NULL,
+      full_name       TEXT NOT NULL,
+      role            TEXT NOT NULL DEFAULT 'admin',
+      is_active       BOOLEAN NOT NULL DEFAULT TRUE,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      last_login_at   TIMESTAMPTZ
+    );
+    
+    -- Criar admin padrão (senha: admin123)
+    INSERT INTO admin_users (email, password_hash, full_name, role)
+    VALUES ('admin@luna.com', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewY5aeWZL8z.IjBe', 'Administrador', 'admin')
+    ON CONFLICT (email) DO NOTHING;
+    
+    -- =========================================
+    -- ADMIN ACTIONS (log de ações admin)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS admin_actions (
+      id              SERIAL PRIMARY KEY,
+      admin_id        INTEGER NOT NULL REFERENCES admin_users(id),
+      action_type     TEXT NOT NULL,
+      target_type     TEXT,
+      target_id       TEXT,
+      description     TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_admin_actions_created ON admin_actions(created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_admin_actions_admin ON admin_actions(admin_id);
+    
+    -- =========================================
+    -- NOTIFICATIONS (notificações para usuários)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS notifications (
+      id              SERIAL PRIMARY KEY,
+      recipient_type  TEXT NOT NULL,
+      recipient_id    INTEGER NOT NULL,
+      type            TEXT NOT NULL,
+      title           TEXT NOT NULL,
+      message         TEXT NOT NULL,
+      read_at         TIMESTAMPTZ,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_notifications_recipient ON notifications(recipient_type, recipient_id, created_at DESC);
+    
+    -- =========================================
+    -- MIGRAÇÕES: Adicionar colunas novas à tabela instances
+    -- =========================================
+    DO $$
+    BEGIN
+      -- instance_id
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='instance_id') THEN
+        ALTER TABLE instances ADD COLUMN instance_id TEXT;
+        UPDATE instances SET instance_id = id WHERE instance_id IS NULL;
+      END IF;
+      
+      -- phone_name
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='phone_name') THEN
+        ALTER TABLE instances ADD COLUMN phone_name TEXT;
+      END IF;
+      
+      -- prompt
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='prompt') THEN
+        ALTER TABLE instances ADD COLUMN prompt TEXT;
+      END IF;
+      
+      -- admin_notes
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='admin_notes') THEN
+        ALTER TABLE instances ADD COLUMN admin_notes TEXT;
+      END IF;
+      
+      -- redirect_phone
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='redirect_phone') THEN
+        ALTER TABLE instances ADD COLUMN redirect_phone TEXT;
+      END IF;
+      
+      -- configured_by
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='configured_by') THEN
+        ALTER TABLE instances ADD COLUMN configured_by INTEGER;
+      END IF;
+      
+      -- configured_at
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='configured_at') THEN
+        ALTER TABLE instances ADD COLUMN configured_at TIMESTAMPTZ;
+      END IF;
+      
+      -- prompt_history
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='instances' AND column_name='prompt_history') THEN
+        ALTER TABLE instances ADD COLUMN prompt_history JSONB DEFAULT '[]'::jsonb;
+      END IF;
+    END$$;
+    
+    -- =========================================
+    -- VIEWS E FUNCTIONS PARA PAINEL ADMIN
+    -- =========================================
+    
+    -- View: Estatísticas do dashboard
+    CREATE OR REPLACE VIEW v_admin_stats AS
+    SELECT
+      (SELECT COUNT(*) FROM instances) as total_instances,
+      (SELECT COUNT(*) FROM instances WHERE admin_status = 'pending_config') as pending_config,
+      (SELECT COUNT(*) FROM instances WHERE admin_status IN ('configured', 'active')) as active_instances,
+      (SELECT COUNT(*) FROM instances WHERE status = 'connected') as connected_instances,
+      (SELECT COUNT(*) FROM users) as total_users,
+      (SELECT COUNT(*) FROM billing_accounts WHERE trial_ends_at > NOW() AND paid_until IS NULL) as users_on_trial,
+      (SELECT COUNT(*) FROM billing_accounts WHERE paid_until > NOW()) as paying_users,
+      (SELECT COUNT(*) FROM messages WHERE created_at::date = CURRENT_DATE) as messages_today;
+    
+    -- Function: Listar instâncias pendentes
+    CREATE OR REPLACE FUNCTION get_pending_instances()
+    RETURNS TABLE (
+      instance_uuid TEXT,
+      instance_id TEXT,
+      user_email TEXT,
+      user_name TEXT,
+      phone_number TEXT,
+      created_at TIMESTAMPTZ,
+      hours_waiting NUMERIC
+    ) AS $$
+    BEGIN
+      RETURN QUERY
+      SELECT
+        i.id as instance_uuid,
+        i.instance_id,
+        u.email as user_email,
+        COALESCE(u.full_name, u.email) as user_name,
+        i.phone_number,
+        i.created_at,
+        EXTRACT(EPOCH FROM (NOW() - i.created_at)) / 3600 as hours_waiting
+      FROM instances i
+      JOIN users u ON i.user_id = u.id
+      WHERE i.admin_status = 'pending_config'
+      ORDER BY i.created_at ASC;
+    END;
+    $$ LANGUAGE plpgsql;
+    
+    -- Adicionar campo full_name na tabela users se não existir
+    DO $$
+    BEGIN
+      IF NOT EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name='users' AND column_name='full_name') THEN
+        ALTER TABLE users ADD COLUMN full_name TEXT;
+      END IF;
+    END$$;
     """
     with get_pool().connection() as con:
         con.execute(sql)
