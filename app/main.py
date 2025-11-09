@@ -29,16 +29,15 @@ from .routes import (
     webhook,  # ✅ agente IA
     instances,  # ✅ gerenciamento de instâncias WhatsApp
 )
-from .routes import pay_stripe  # ✅ rotas de pagamento (Stripe)
+# TEMPORARIAMENTE DESABILITADO - asyncpg precisa de compilador
+# from .routes import pay_stripe  # ✅ rotas de pagamento (Stripe)
+# from .models_billing import init_billing_schema
 
 # Auth da instância (UAZAPI): monta /api/auth corretamente a partir de app/auth.py
 from .auth import router as auth_router  # login via token da instância
 
 # Schema inicial (seu módulo existente)
 from .pg import init_schema  # mantém como está, caso já crie outros schemas
-
-# 🔧 Billing schema (novo): garante que 'tenants' e 'payments' existam
-from .models_billing import init_billing_schema
 
 def allowed_origins() -> list[str]:
     allowlist = set()
@@ -167,8 +166,8 @@ app.include_router(media.router,       prefix="/api/media",   tags=["media"])
 app.include_router(lead_status.router, prefix="/api",         tags=["lead-status"])
 app.include_router(billing.router,     prefix="/api/billing", tags=["billing"])
 
-# Pagamentos (Stripe: checkout + webhook)
-app.include_router(pay_stripe.router,  prefix="/api/pay/stripe", tags=["stripe"])
+# Pagamentos (Stripe: checkout + webhook) - TEMPORARIAMENTE DESABILITADO
+# app.include_router(pay_stripe.router,  prefix="/api/pay/stripe", tags=["stripe"])
 
 # Healthcheck simples
 @app.get("/healthz")
