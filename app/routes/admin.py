@@ -557,7 +557,7 @@ async def update_prompt(
                 if not instance:
                     raise HTTPException(status_code=404, detail="Instância não encontrada")
                 
-                old_prompt = instance[0]
+                old_prompt = instance['prompt'] if instance else ''
                 
                 log.info(f"📝 [ADMIN] Atualizando prompt da instância {instance_id}")
                 log.info(f"   Prompt anterior: {len(old_prompt or '')} caracteres")
