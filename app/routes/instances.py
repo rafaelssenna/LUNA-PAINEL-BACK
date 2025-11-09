@@ -320,11 +320,17 @@ async def get_status_route(
         log.info(f"🔍 [STATUS] Token: {token[:20]}... | Status atual no banco: {current_status}")
         
         state_result = await uazapi.get_connection_state(instance_id, token)
+        
+        # Conforme docs UAZAPI: verificar campos 'status' e 'state'
+        uazapi_status = state_result.get("status", "")
         uazapi_state = state_result.get("state", "close")
         
-        log.info(f"📊 [STATUS] UAZAPI retornou state: {uazapi_state}")
+        log.info(f"📊 [STATUS] UAZAPI retornou:")
+        log.info(f"   - status: {uazapi_status}")
+        log.info(f"   - state: {uazapi_state}")
         
-        connected = uazapi_state == "open"
+        # Conectado se status="connected" OU state="open"
+        connected = (uazapi_status == "connected") or (uazapi_state == "open")
         
         log.info(f"📊 [STATUS] Conectado? {connected} | Tem phone_number no banco? {bool(phone_number)}")
         
