@@ -308,14 +308,21 @@ async def process_message(instance_id: str, number: str, text: str):
     """
     Processa mensagem com IA
     """
-    log.info(f"🤖 [IA] Processando mensagem de {number}: \"{text[:50]}...\"")
-    
-    # Lock para evitar processamento duplicado
-    if processing_lock.get(number):
-        log.warning(f"⚠️ [IA] Já processando. Ignorando duplicata.")
+    try:
+        log.info(f"🤖 [IA] INICIANDO - Mensagem de {number}: \"{text[:50]}...\"")
+        
+        # Lock para evitar processamento duplicado
+        if processing_lock.get(number):
+            log.warning(f"⚠️ [IA] Já processando. Ignorando duplicata.")
+            return
+        
+        processing_lock[number] = True
+        log.info(f"🔒 [IA] Lock adquirido")
+        
+    except Exception as e:
+        log.error(f"❌ [IA] ERRO CRÍTICO NO INÍCIO: {e}")
+        log.error(f"   Traceback: {str(e.__class__.__name__)}: {str(e)}")
         return
-    
-    processing_lock[number] = True
     
     try:
         # Buscar configuração da instância (prompt, token, redirect_phone)
@@ -415,9 +422,14 @@ async def process_message(instance_id: str, number: str, text: str):
                 log.info(f"✅ [IA] Mensagem enviada com sucesso")
     
     except Exception as e:
-        log.error(f"Erro ao processar mensagem: {e}")
+        log.error(f"❌ [IA] ERRO FATAL ao processar mensagem!")
+        log.error(f"   Tipo: {e.__class__.__name__}")
+        log.error(f"   Mensagem: {str(e)}")
+        import traceback
+        log.error(f"   Traceback completo:\n{traceback.format_exc()}")
     finally:
         processing_lock[number] = False
+        log.info(f"🔓 [IA] Lock liberado para {number}")
 
 
 # ==============================================================================
@@ -488,7 +500,9 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
                 log.info(f"🚀 [BUFFER] Processando {len(entry['texts'])} mensagem(s): \"{combined_text[:100]}...\"")
+                log.info(f"🔄 [BUFFER] Chamando background_tasks.add_task(process_message)...")
                 background_tasks.add_task(process_message, instance_id, number, combined_text)
+                log.info(f"✅ [BUFFER] Task adicionada ao background")
         
         task = asyncio.create_task(process_buffered())
         entry["timer"] = task
@@ -502,7 +516,9 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
                 log.info(f"🚀 [BUFFER] Processando: \"{combined_text[:100]}...\"")
+                log.info(f"🔄 [BUFFER] Chamando background_tasks.add_task(process_message)...")
                 background_tasks.add_task(process_message, instance_id, number, combined_text)
+                log.info(f"✅ [BUFFER] Task adicionada ao background")
         
         task = asyncio.create_task(process_buffered())
         pending_messages[key] = {
