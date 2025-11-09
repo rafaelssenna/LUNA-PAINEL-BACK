@@ -211,7 +211,7 @@ async def send_whatsapp_text(host: str, token: str, number: str, text: str) -> b
 
 
 async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Optional[Dict[str, Any]]:
-    """Chama OpenAI com function calling"""
+    """Chama OpenAI com function calling (igual TypeScript)"""
     if not openai_client:
         log.error("OpenAI não configurado")
         return None
@@ -234,8 +234,28 @@ async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Opti
         {
             "type": "function",
             "function": {
+                "name": "send_menu",
+                "description": "Envia menu interativo com botões de SIM/NÃO",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "text": {"type": "string", "description": "Texto da pergunta"},
+                        "choices": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Opções do menu (ex: ['sim', 'nao'])"
+                        },
+                        "footerText": {"type": "string", "description": "Texto do rodapé (opcional)"}
+                    },
+                    "required": ["text", "choices"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "handoff",
-                "description": "Encaminha conversa para humano (Jonas)",
+                "description": "Encaminha conversa para humano",
                 "parameters": {
                     "type": "object",
                     "properties": {}
@@ -295,9 +315,10 @@ async def process_message(instance_id: str, number: str, text: str):
             log.warning(f"❌ Instância {instance_id} não encontrada no banco")
             return
         
-        # Verificar se está conectada
+        # ✅ VERIFICAÇÃO CRÍTICA: Ignorar se desconectado
         if config["status"] != "connected":
-            log.warning(f"⚠️ Instância {instance_id} não conectada (status={config['status']})")
+            log.warning(f"⚠️ [BLOQUEIO] Instância {instance_id} DESCONECTADA (status={config['status']}) - Ignorando mensagem")
+            log.warning(f"   WhatsApp precisa ser reconectado para IA funcionar novamente")
             return
         
         # Verificar se está configurada pelo admin
@@ -320,9 +341,11 @@ async def process_message(instance_id: str, number: str, text: str):
         if not response:
             return
         
-        # Processa tool calls
+        # Processa tool calls (igual TypeScript - processa TODAS em sequência)
         tool_calls = response.get("tool_calls", [])
         if tool_calls:
+            log.info(f"🤖 [IA] {len(tool_calls)} função(ões) detectada(s)")
+            
             for call in tool_calls:
                 if call.type != "function":
                     continue
@@ -330,16 +353,43 @@ async def process_message(instance_id: str, number: str, text: str):
                 func_name = call.function.name
                 func_args = json.loads(call.function.arguments)
                 
+                log.info(f"   🔧 Executando: {func_name}")
+                
                 if func_name == "send_text":
                     msg = func_args.get("message", "")
                     if msg:
                         await send_whatsapp_text(config["host"], config["token"], number, msg)
                         await save_message(instance_id, number, msg, "out")
+                        log.info(f"   ✅ send_text executado: {len(msg)} caracteres")
+                        await asyncio.sleep(0.5)
+                
+                elif func_name == "send_menu":
+                    # Menu com botões (igual TypeScript)
+                    text = func_args.get("text", "")
+                    choices = func_args.get("choices", ["sim", "nao"])
+                    footer = func_args.get("footerText", "Escolha uma opção")
+                    
+                    if text:
+                        # Por enquanto, envia como texto simples
+                        # TODO: Implementar botões nativos da UAZAPI
+                        menu_text = f"{text}\n\n"
+                        for i, choice in enumerate(choices, 1):
+                            menu_text += f"{i}. {choice.upper()}\n"
+                        menu_text += f"\n{footer}"
+                        
+                        await send_whatsapp_text(config["host"], config["token"], number, menu_text)
+                        await save_message(instance_id, number, text, "out")
+                        log.info(f"   ✅ send_menu executado: {len(choices)} opções")
                         await asyncio.sleep(0.5)
                 
                 elif func_name == "handoff":
+                    log.info(f"   🎯 HANDOFF detectado!")
                     await handoff_to_human(number, config["host"], config["token"], config.get("redirect_phone", ""))
                     await save_message(instance_id, number, "[handoff]", "out")
+                    log.info(f"   ✅ handoff executado")
+                
+                else:
+                    log.warning(f"   ❌ Função desconhecida: {func_name}")
         
         # Se não tem tool calls, envia conteúdo direto
         elif response.get("content"):
@@ -417,6 +467,92 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         }
     
     return {"ok": True, "buffered": True}
+
+
+@router.post("/webhook/status")
+async def whatsapp_status_webhook(request: Request):
+    """
+    Webhook para receber eventos de status do WhatsApp (conexão/desconexão)
+    A UAZAPI envia eventos quando o WhatsApp conecta ou desconecta
+    """
+    try:
+        data = await request.json()
+    except:
+        data = {}
+    
+    log.info(f"[WEBHOOK STATUS] Evento recebido: {data}")
+    
+    # Extrair dados
+    instance_id = data.get("instance_id") or data.get("instanceId") or data.get("instance")
+    event = data.get("event") or data.get("type")
+    status = data.get("status")
+    state = data.get("state")
+    
+    if not instance_id:
+        return {"ok": True, "ignored": "no_instance_id"}
+    
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar instância
+                cur.execute("SELECT id, status FROM instances WHERE id = %s", (instance_id,))
+                instance = cur.fetchone()
+                
+                if not instance:
+                    log.warning(f"[WEBHOOK STATUS] Instância {instance_id} não encontrada")
+                    return {"ok": True, "ignored": "instance_not_found"}
+                
+                current_status = instance[1]
+                new_status = current_status
+                
+                # Determinar novo status baseado no evento
+                # A UAZAPI pode enviar diferentes tipos de eventos
+                if event in ["disconnect", "disconnected", "close", "closed"]:
+                    new_status = "disconnected"
+                    log.warning(f"⚠️ [DESCONEXÃO] Instância {instance_id} DESCONECTADA!")
+                    
+                elif event in ["connect", "connected", "open", "ready"]:
+                    new_status = "connected"
+                    log.info(f"✅ [CONEXÃO] Instância {instance_id} conectada")
+                    
+                elif status == "close" or state == "close":
+                    new_status = "disconnected"
+                    log.warning(f"⚠️ [DESCONEXÃO] Instância {instance_id} DESCONECTADA (status close)!")
+                    
+                elif status == "open" or state == "open":
+                    new_status = "connected"
+                    log.info(f"✅ [CONEXÃO] Instância {instance_id} conectada (status open)")
+                
+                # Atualizar status no banco se mudou
+                if new_status != current_status:
+                    cur.execute("""
+                        UPDATE instances
+                        SET status = %s, updated_at = NOW()
+                        WHERE id = %s
+                    """, (new_status, instance_id))
+                    
+                    conn.commit()
+                    
+                    log.info(f"✅ Status atualizado: {instance_id} → {new_status}")
+                    
+                    # Se desconectou, registrar no log
+                    if new_status == "disconnected":
+                        cur.execute("""
+                            INSERT INTO admin_actions 
+                            (admin_id, action_type, target_type, target_id, description, created_at)
+                            VALUES (1, 'instance_disconnected', 'instance', %s, 
+                                    'WhatsApp desconectado automaticamente', NOW())
+                        """, (instance_id,))
+                        conn.commit()
+                
+                return {"ok": True, "status_updated": new_status != current_status, "new_status": new_status}
+                
+    except Exception as e:
+        log.error(f"[WEBHOOK STATUS] Erro ao processar evento: {e}")
+        import traceback
+        traceback.print_exc()
+        return {"ok": False, "error": str(e)}
 
 
 @router.get("/webhook/health")
