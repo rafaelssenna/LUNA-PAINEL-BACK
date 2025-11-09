@@ -129,25 +129,25 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
                     return None
                 
                 log.info(f"✅ [CONFIG] Instância encontrada no banco")
-                log.info(f"   ID: {row[0]}")
-                log.info(f"   Status: {row[4]}")
-                log.info(f"   Admin Status: {row[6]}")
-                log.info(f"   Tem prompt: {'SIM' if row[3] else 'NÃO'}")
-                log.info(f"   Redirect phone: {row[5] or 'NÃO CONFIGURADO'}")
+                log.info(f"   ID: {row['id']}")
+                log.info(f"   Status: {row['status']}")
+                log.info(f"   Admin Status: {row['admin_status']}")
+                log.info(f"   Tem prompt: {'SIM' if row['prompt'] else 'NÃO'}")
+                log.info(f"   Redirect phone: {row['redirect_phone'] or 'NÃO CONFIGURADO'}")
                 
                 # Se não tem prompt configurado, não processa (admin ainda não configurou)
-                if not row[3]:
+                if not row['prompt']:
                     log.warning(f"⚠️ [CONFIG] Instância {instance_id} sem prompt configurado")
                     return None
                 
                 return {
-                    "id": row[0],
-                    "host": row[1],
-                    "token": row[2],
-                    "prompt": row[3],  # ✅ Prompt específico da instância (configurado pelo admin)
-                    "status": row[4],
-                    "redirect_phone": row[5],  # ✅ Número específico da instância
-                    "admin_status": row[6]  # ✅ Status de configuração do admin
+                    "id": row['id'],
+                    "host": row['uazapi_host'],
+                    "token": row['uazapi_token'],
+                    "prompt": row['prompt'],  # ✅ Prompt específico da instância (configurado pelo admin)
+                    "status": row['status'],
+                    "redirect_phone": row['redirect_phone'],  # ✅ Número específico da instância
+                    "admin_status": row['admin_status']  # ✅ Status de configuração do admin
                 }
     except Exception as e:
         log.error(f"Erro ao buscar config da instância {instance_id}: {e}")
