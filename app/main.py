@@ -99,12 +99,31 @@ async def _startup():
     logger.info("CORS allow_origins: %s", _all_origins)
     logger.info("CORS allow_origin_regex: %s", allowed_origin_regex())
 
+    # Validar variáveis críticas
     db_url = os.getenv("DATABASE_URL") or ""
     if not db_url:
-        logger.error("DATABASE_URL não definido! Defina a variável de ambiente.")
+        logger.error("❌ DATABASE_URL não definido! Defina a variável de ambiente.")
     else:
         safe_db = db_url.split("@")[-1]
-        logger.info("DATABASE_URL detectado (host/db: %s)", safe_db)
+        logger.info("✅ DATABASE_URL detectado (host/db: %s)", safe_db)
+    
+    # Validar UAZAPI (WhatsApp)
+    uazapi_admin_token = os.getenv("UAZAPI_ADMIN_TOKEN") or ""
+    if not uazapi_admin_token or uazapi_admin_token == "PRECISA_FORNECER_ESSE_TOKEN":
+        logger.error("❌ UAZAPI_ADMIN_TOKEN não configurado!")
+        logger.error("❌ Sem esse token, não será possível criar instâncias WhatsApp.")
+        logger.error("❌ Configure no .env: UAZAPI_ADMIN_TOKEN=seu_token_aqui")
+    else:
+        logger.info("✅ UAZAPI_ADMIN_TOKEN configurado (length: %d)", len(uazapi_admin_token))
+    
+    # Validar OpenAI (IA)
+    openai_key = os.getenv("OPENAI_API_KEY") or ""
+    if not openai_key or openai_key == "PRECISA_FORNECER":
+        logger.warning("⚠️ OPENAI_API_KEY não configurado!")
+        logger.warning("⚠️ A IA não funcionará sem essa chave.")
+        logger.warning("⚠️ Configure no .env: OPENAI_API_KEY=sk-...")
+    else:
+        logger.info("✅ OPENAI_API_KEY configurado")
 
     try:
         # Seu schema padrão (lead_status, users etc.)
