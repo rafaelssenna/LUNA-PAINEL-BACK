@@ -456,15 +456,27 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         data = {}
     
     # Extrai dados
-    # UAZAPI envia "id" dentro de "chat"
+    # UAZAPI envia "owner" que é o telefone da instância
     chat = data.get("chat", {})
-    instance_id = (
-        data.get("instance_id") or 
-        data.get("instanceId") or 
-        data.get("instance") or 
-        data.get("id") or
-        chat.get("id")  # ← UAZAPI envia dentro de "chat"!
-    )
+    owner = chat.get("owner")  # Telefone da instância (ex: 553188379840)
+    
+    # Buscar instância pelo owner (phone_number)
+    instance_id = None
+    if owner:
+        try:
+            pool = get_pool()
+            with pool.connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "SELECT id FROM instances WHERE phone_number = %s AND status = 'connected' ORDER BY created_at DESC LIMIT 1",
+                        (owner,)
+                    )
+                    row = cur.fetchone()
+                    if row:
+                        instance_id = row[0]
+                        log.info(f"🔍 [WEBHOOK] Instância encontrada pelo owner {owner}: {instance_id}")
+        except Exception as e:
+            log.error(f"Erro ao buscar instância por owner: {e}")
     
     number = extract_number(data)
     text = extract_text(data)
