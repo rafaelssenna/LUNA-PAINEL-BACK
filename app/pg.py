@@ -36,12 +36,68 @@ def get_conn():
 
 def init_schema():
     """
+    - Tabela instances -> instâncias WhatsApp do usuário
     - Tabela lead_status -> garante migrações/índices
     - Tabela billing_accounts -> trial + cobrança
     - Tabela users -> login por e-mail/senha
     - Tabela messages -> armazenamento local de mensagens
     """
     sql = """
+    -- =========================================
+    -- INSTANCES (WhatsApp)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS instances (
+      id              TEXT PRIMARY KEY,
+      user_id         INTEGER NOT NULL,
+      uazapi_token    TEXT NOT NULL,
+      uazapi_host     TEXT NOT NULL,
+      status          TEXT NOT NULL DEFAULT 'disconnected',
+      admin_status    TEXT NOT NULL DEFAULT 'pending_config',
+      phone_number    TEXT,
+      created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at      TIMESTAMPTZ
+    );
+    
+    -- Migração: converter id de UUID para TEXT (se necessário)
+    DO $$
+    BEGIN
+      -- Se a coluna id existir como UUID, recriar tabela
+      IF EXISTS (
+        SELECT 1 FROM information_schema.columns 
+        WHERE table_name = 'instances' 
+        AND column_name = 'id' 
+        AND data_type = 'uuid'
+      ) THEN
+        -- Backup dos dados existentes
+        CREATE TEMP TABLE instances_backup AS SELECT * FROM instances;
+        DROP TABLE instances CASCADE;
+        
+        -- Recriar tabela com id TEXT
+        CREATE TABLE instances (
+          id              TEXT PRIMARY KEY,
+          user_id         INTEGER NOT NULL,
+          uazapi_token    TEXT NOT NULL,
+          uazapi_host     TEXT NOT NULL,
+          status          TEXT NOT NULL DEFAULT 'disconnected',
+          admin_status    TEXT NOT NULL DEFAULT 'pending_config',
+          phone_number    TEXT,
+          created_at      TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+          updated_at      TIMESTAMPTZ
+        );
+        
+        -- Restaurar dados (convertendo UUID para TEXT)
+        INSERT INTO instances 
+        SELECT id::TEXT, user_id, uazapi_token, uazapi_host, status, admin_status, 
+               phone_number, created_at, updated_at 
+        FROM instances_backup;
+        
+        DROP TABLE instances_backup;
+      END IF;
+    END$$;
+    
+    CREATE INDEX IF NOT EXISTS idx_instances_user_id ON instances(user_id);
+    CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status);
+    
     -- =========================================
     -- LEAD STATUS
     -- =========================================
