@@ -72,8 +72,10 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
         full_headers = {**base_headers, **auth_headers}
         
         # Mesclar body base com extras de auth
+        # IMPORTANTE: Evolution API requer "token" no body (vazio para gerar auto)
         body = {
             "instanceName": instance_name,
+            "token": "",  # Deixar vazio para gerar automaticamente
             "qrcode": True,
             "integration": "WHATSAPP-BAILEYS",
             **body_extras
