@@ -460,6 +460,8 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     chat = data.get("chat", {})
     owner = chat.get("owner")  # Telefone da instância (ex: 553188379840)
     
+    log.info(f"🔍 [WEBHOOK] Owner extraído do payload: {owner}")
+    
     # Buscar instância pelo owner (phone_number)
     instance_id = None
     if owner:
@@ -467,16 +469,46 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             pool = get_pool()
             with pool.connection() as conn:
                 with conn.cursor() as cur:
+                    # Primeiro, ver quantas instâncias existem com esse número
                     cur.execute(
-                        "SELECT id FROM instances WHERE phone_number = %s AND status = 'connected' ORDER BY created_at DESC LIMIT 1",
+                        "SELECT COUNT(*) FROM instances WHERE phone_number = %s",
                         (owner,)
                     )
-                    row = cur.fetchone()
-                    if row:
-                        instance_id = row[0]
-                        log.info(f"🔍 [WEBHOOK] Instância encontrada pelo owner {owner}: {instance_id}")
+                    count = cur.fetchone()[0]
+                    log.info(f"🔍 [WEBHOOK] Instâncias encontradas com phone_number={owner}: {count}")
+                    
+                    # Buscar a conectada e ativa
+                    cur.execute(
+                        "SELECT id, status, admin_status FROM instances WHERE phone_number = %s ORDER BY created_at DESC LIMIT 5",
+                        (owner,)
+                    )
+                    rows = cur.fetchall()
+                    
+                    if rows:
+                        log.info(f"🔍 [WEBHOOK] Instâncias encontradas:")
+                        for row in rows:
+                            log.info(f"   - ID: {row[0]}, Status: {row[1]}, Admin: {row[2]}")
+                        
+                        # Pegar a primeira que está connected
+                        for row in rows:
+                            if row[1] == 'connected':
+                                instance_id = row[0]
+                                log.info(f"✅ [WEBHOOK] Usando instância: {instance_id}")
+                                break
+                        
+                        if not instance_id and rows:
+                            # Se nenhuma connected, usa a mais recente
+                            instance_id = rows[0][0]
+                            log.warning(f"⚠️ [WEBHOOK] Nenhuma connected, usando mais recente: {instance_id}")
+                    else:
+                        log.error(f"❌ [WEBHOOK] Nenhuma instância com phone_number={owner}")
+                    
         except Exception as e:
-            log.error(f"Erro ao buscar instância por owner: {e}")
+            log.error(f"❌ [WEBHOOK] Erro ao buscar instância por owner: {e}")
+            import traceback
+            log.error(traceback.format_exc())
+    else:
+        log.error(f"❌ [WEBHOOK] Owner não encontrado no payload!")
     
     number = extract_number(data)
     text = extract_text(data)
