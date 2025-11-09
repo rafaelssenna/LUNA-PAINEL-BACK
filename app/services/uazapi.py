@@ -349,8 +349,10 @@ async def set_webhook(instance_id: str, token: str, webhook_url: str) -> Dict[st
                     "enabled": True,
                     "url": webhook_url,
                     "events": [
-                        "messages",         # Novas mensagens
-                        "messages_update"   # Atualizações de mensagens
+                        "messages",            # Novas mensagens
+                        "messages_update",     # Atualizações de mensagens
+                        "connection_update",   # ✅ Eventos de conexão/desconexão
+                        "status_update"        # ✅ Mudanças de status
                     ],
                     "excludeMessages": [
                         "wasSentByApi",  # Evitar loops (mensagens enviadas pela API)
