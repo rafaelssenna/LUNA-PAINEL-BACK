@@ -27,6 +27,7 @@ from .routes import (
     users,
     admin,  # ✅ rotas administrativas
     webhook,  # ✅ agente IA
+    instances,  # ✅ gerenciamento de instâncias WhatsApp
 )
 from .routes import pay_stripe  # ✅ rotas de pagamento (Stripe)
 
@@ -125,6 +126,9 @@ app.include_router(auth_router,        prefix="/api/auth",    tags=["auth"])
 
 # Auth de usuário (e-mail/senha)
 app.include_router(users.router,       prefix="/api/users",   tags=["users"])
+
+# Gerenciamento de instâncias WhatsApp
+app.include_router(instances.router,   prefix="/api/instances", tags=["instances"])
 
 # Admin (painel administrativo)
 app.include_router(admin.router,       prefix="/api/admin",   tags=["admin"])
