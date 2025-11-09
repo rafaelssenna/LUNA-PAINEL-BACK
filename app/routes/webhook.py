@@ -301,25 +301,60 @@ async def handoff_to_human(number: str, host: str, token: str, redirect_phone: s
 
 
 async def process_message(instance_id: str, number: str, text: str):
-    """Processa mensagem e gera resposta"""
+    """
+    Processa mensagem com IA
+    """
+    log.info("=" * 80)
+    log.info(f"🤖 [IA] INICIANDO PROCESSAMENTO")
+    log.info(f"   Instance: {instance_id}")
+    log.info(f"   Number: {number}")
+    log.info(f"   Text: {text[:100]}...")
+    log.info("=" * 80)
+    
+    # Lock para evitar processamento duplicado
     if processing_lock.get(number):
-        log.info(f"Já processando mensagem de {number}")
+        log.warning(f"⚠️ [IA] Mensagem de {number} já está sendo processada. Ignorando duplicata.")
         return
     
     processing_lock[number] = True
+    log.info(f"🔒 [IA] Lock adquirido para {number}")
     
     try:
-        # Busca config da instância
+        # Buscar configuração da instância (prompt, token, redirect_phone)
+        log.info(f"🔍 [IA] Buscando configuração da instância {instance_id}...")
         config = await get_instance_config(instance_id)
+        
         if not config:
-            log.warning(f"❌ Instância {instance_id} não encontrada no banco")
+            log.error(f"❌ [IA] Configuração não encontrada para instância {instance_id}!")
+            log.error(f"   Verifique se a instância existe no banco de dados")
             return
+        
+        log.info(f"✅ [IA] Configuração encontrada:")
+        log.info(f"   - Host: {config['host']}")
+        log.info(f"   - Token: {config['token'][:20]}...")
+        log.info(f"   - Status: {config['status']}")
+        log.info(f"   - Admin Status: {config.get('admin_status', 'N/A')}")
+        log.info(f"   - Prompt configurado: {'SIM' if config.get('prompt') else 'NÃO'}")
+        log.info(f"   - Redirect Phone: {config.get('redirect_phone', 'N/A')}")
+        
+        # ✅ VERIFICAÇÃO: admin_status deve ser 'configured' ou 'active'
+        admin_status = config.get("admin_status", "")
+        if admin_status not in ["configured", "active"]:
+            log.warning(f"⚠️ [IA] Instância {instance_id} ainda não configurada pelo admin!")
+            log.warning(f"   Admin status atual: {admin_status}")
+            log.warning(f"   Necessário: 'configured' ou 'active'")
+            return
+        
+        log.info(f"✅ [IA] Admin status OK: {admin_status}")
         
         # ✅ VERIFICAÇÃO CRÍTICA: Ignorar se desconectado
         if config["status"] != "connected":
-            log.warning(f"⚠️ [BLOQUEIO] Instância {instance_id} DESCONECTADA (status={config['status']}) - Ignorando mensagem")
-            log.warning(f"   WhatsApp precisa ser reconectado para IA funcionar novamente")
+            log.warning(f"⚠️ [IA] [BLOQUEIO] Instância DESCONECTADA!")
+            log.warning(f"   Status atual: {config['status']}")
+            log.warning(f"   WhatsApp precisa ser reconectado para IA funcionar")
             return
+        
+        log.info(f"✅ [IA] Status de conexão OK: connected")
         
         # Verificar se está configurada pelo admin
         admin_status = config.get("admin_status", "pending_config")
@@ -330,16 +365,31 @@ async def process_message(instance_id: str, number: str, text: str):
         log.info(f"✅ Instância {instance_id} pronta para processar mensagens (status={config['status']}, admin_status={admin_status})")
         
         # Salva mensagem do usuário
+        log.info(f"💾 [IA] Salvando mensagem do usuário no banco...")
         await save_message(instance_id, number, text, "in")
+        log.info(f"✅ [IA] Mensagem salva")
         
         # Busca histórico
+        log.info(f"📜 [IA] Buscando histórico de conversa...")
         history = await get_history(number, instance_id)
+        log.info(f"✅ [IA] Histórico carregado: {len(history)} mensagens anteriores")
+        
         history.append({"role": "user", "content": text})
+        log.info(f"📝 [IA] Mensagem atual adicionada ao histórico. Total: {len(history)} mensagens")
         
         # Chama IA
+        log.info(f"🧠 [IA] Chamando OpenAI...")
+        log.info(f"   Model: {OPENAI_MODEL}")
+        log.info(f"   Prompt length: {len(config['prompt'])} caracteres")
+        log.info(f"   History length: {len(history)} mensagens")
+        
         response = await call_openai(history, config["prompt"])
+        
         if not response:
+            log.error(f"❌ [IA] OpenAI não retornou resposta!")
             return
+        
+        log.info(f"✅ [IA] Resposta recebida da OpenAI")
         
         # Processa tool calls (igual TypeScript - processa TODAS em sequência)
         tool_calls = response.get("tool_calls", [])
@@ -410,9 +460,15 @@ async def process_message(instance_id: str, number: str, text: str):
 @router.post("/webhook")
 async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     """Webhook para receber mensagens do WhatsApp"""
+    log.info("=" * 80)
+    log.info("📥 [WEBHOOK] MENSAGEM RECEBIDA!")
+    log.info("=" * 80)
+    
     try:
         data = await request.json()
-    except:
+        log.info(f"📦 [WEBHOOK] Payload recebido: {json.dumps(data, indent=2)[:500]}...")
+    except Exception as e:
+        log.error(f"❌ [WEBHOOK] Erro ao parsear JSON: {e}")
         data = {}
     
     # Extrai dados
@@ -421,20 +477,40 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     text = extract_text(data)
     from_me = data.get("fromMe", False)
     
-    if not instance_id or not number or from_me:
-        return {"ok": True, "ignored": "missing_data_or_from_me"}
+    log.info(f"🔍 [WEBHOOK] Dados extraídos:")
+    log.info(f"   - instance_id: {instance_id}")
+    log.info(f"   - number: {number}")
+    log.info(f"   - text: {text[:100] if text else 'VAZIO'}...")
+    log.info(f"   - from_me: {from_me}")
+    
+    if not instance_id:
+        log.warning("⚠️ [WEBHOOK] Instance ID não encontrado! Ignorando.")
+        return {"ok": True, "ignored": "no_instance_id"}
+    
+    if not number:
+        log.warning("⚠️ [WEBHOOK] Número não encontrado! Ignorando.")
+        return {"ok": True, "ignored": "no_number"}
+    
+    if from_me:
+        log.info("ℹ️ [WEBHOOK] Mensagem enviada por mim (from_me=True). Ignorando.")
+        return {"ok": True, "ignored": "from_me"}
     
     if not text:
+        log.warning("⚠️ [WEBHOOK] Texto vazio! Ignorando.")
         return {"ok": True, "ignored": "no_text"}
     
     # Buffer de agregação (7 segundos)
     key = f"{instance_id}:{number}"
     now = datetime.now()
     
+    log.info(f"⏱️ [BUFFER] Iniciando buffer para: {key}")
+    
     if key in pending_messages:
         entry = pending_messages[key]
         entry["texts"].append(text)
         entry["last_update"] = now
+        
+        log.info(f"📝 [BUFFER] Adicionando ao buffer existente. Total: {len(entry['texts'])} mensagens")
         
         # Cancela timer anterior
         if "timer" in entry:
@@ -442,21 +518,29 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         
         # Cria novo timer
         async def process_buffered():
+            log.info(f"⏳ [BUFFER] Aguardando {BUFFER_SECONDS}s antes de processar...")
             await asyncio.sleep(BUFFER_SECONDS)
             if key in pending_messages:
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
+                log.info(f"🚀 [BUFFER] Tempo esgotado! Processando {len(entry['texts'])} mensagem(s) agrupada(s)")
+                log.info(f"📄 [BUFFER] Texto combinado: {combined_text[:200]}...")
                 background_tasks.add_task(process_message, instance_id, number, combined_text)
         
         task = asyncio.create_task(process_buffered())
         entry["timer"] = task
     else:
+        log.info(f"🆕 [BUFFER] Primeira mensagem no buffer")
+        
         # Primeira mensagem - inicia buffer
         async def process_buffered():
+            log.info(f"⏳ [BUFFER] Aguardando {BUFFER_SECONDS}s antes de processar...")
             await asyncio.sleep(BUFFER_SECONDS)
             if key in pending_messages:
                 entry = pending_messages.pop(key)
                 combined_text = " ".join(entry["texts"])
+                log.info(f"🚀 [BUFFER] Tempo esgotado! Processando mensagem")
+                log.info(f"📄 [BUFFER] Texto: {combined_text[:200]}...")
                 background_tasks.add_task(process_message, instance_id, number, combined_text)
         
         task = asyncio.create_task(process_buffered())
@@ -466,6 +550,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             "timer": task
         }
     
+    log.info(f"✅ [WEBHOOK] Mensagem adicionada ao buffer. Aguardando mais mensagens ou timeout.")
     return {"ok": True, "buffered": True}
 
 
