@@ -131,16 +131,28 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
             log.warning(f"⚠️ Instância criada na UAZAPI mas não salva no banco!")
             # Continuar mesmo assim para retornar o QR code
         
-        # 4. Buscar QR Code
-        qr_data = instance_data.get("qrcode")  # QR code já vem na resposta!
+        # 4. Conectar instância e buscar QR Code
+        qr_data = instance_data.get("qrcode")  # Tentar da resposta primeiro
+        
+        log.info(f"📊 QR code da criação: presente={bool(qr_data)}")
         
         if not qr_data:
-            # Se não veio, tenta buscar
+            # QR code não veio na criação, usar get_qrcode que tenta múltiplos endpoints
             try:
+                log.info(f"🔄 QR code vazio, tentando obter via endpoints...")
                 qr_result = await uazapi.get_qrcode(instance_id, instance_token)
                 qr_data = qr_result.get("qrcode")
+                paircode = qr_result.get("paircode")
+                
+                if qr_data:
+                    log.info(f"✅ QR code obtido! (length: {len(qr_data)})")
+                elif paircode:
+                    log.info(f"✅ Pair code obtido: {paircode}")
+                else:
+                    log.warning(f"⚠️ QR code não disponível ainda")
+                    log.warning(f"⚠️ Usuário pode obter depois via /instances/{instance_id}/qrcode")
             except Exception as e:
-                log.warning(f"⚠️ Falha ao buscar QR code: {e}")
+                log.error(f"❌ Falha ao obter QR code: {e}")
         
         return {
             "instance_id": db_instance_id,  # ← Retornar ID da UAZAPI (para o frontend usar)
