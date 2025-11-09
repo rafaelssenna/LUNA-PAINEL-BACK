@@ -67,7 +67,10 @@ def extract_text(data: Dict[str, Any]) -> str:
         ["body"],
         ["caption"],
         ["chat", "text"],
+        ["chat", "lastMessage", "text"],  # ← UAZAPI pode enviar assim
+        ["chat", "lastMessage", "body"],
         ["data", "message", "conversation"],
+        ["data", "text"],
     ]
     
     for path in paths:
@@ -466,13 +469,23 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     
     try:
         data = await request.json()
-        log.info(f"📦 [WEBHOOK] Payload recebido: {json.dumps(data, indent=2)[:500]}...")
+        # Log payload completo (limitado a 2000 chars para não poluir)
+        payload_str = json.dumps(data, indent=2, ensure_ascii=False)
+        log.info(f"📦 [WEBHOOK] Payload recebido ({len(payload_str)} chars):")
+        log.info(payload_str[:2000] + ("..." if len(payload_str) > 2000 else ""))
     except Exception as e:
         log.error(f"❌ [WEBHOOK] Erro ao parsear JSON: {e}")
         data = {}
     
     # Extrai dados
-    instance_id = data.get("instance_id") or data.get("instanceId") or data.get("instance")
+    # UAZAPI envia "id" no payload raiz
+    instance_id = (
+        data.get("instance_id") or 
+        data.get("instanceId") or 
+        data.get("instance") or 
+        data.get("id")  # ← UAZAPI usa "id" no payload raiz!
+    )
+    
     number = extract_number(data)
     text = extract_text(data)
     from_me = data.get("fromMe", False)
