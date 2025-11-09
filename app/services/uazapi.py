@@ -37,22 +37,20 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
     log.info(f"🔄 Host: {UAZAPI_HOST}")
     log.info(f"🔄 Token presente: {bool(UAZAPI_ADMIN_TOKEN)} (length: {len(UAZAPI_ADMIN_TOKEN)})")
     
-    # Formato EXATO da Evolution API (baseado em docs.evolution-api.com)
-    url = f"https://{UAZAPI_HOST}/instance/create"
+    # Formato CORRETO da UAZAPI (documentação oficial)
+    url = f"https://{UAZAPI_HOST}/instance/init"
     
     headers = {
         "Content-Type": "application/json",
-        "apikey": UAZAPI_ADMIN_TOKEN
+        "admintoken": UAZAPI_ADMIN_TOKEN
     }
     
     body = {
-        "instanceName": instance_name,
-        "token": "",
-        "qrcode": True,
-        "integration": "WHATSAPP-BAILEYS"
+        "name": instance_name,
+        "systemName": "Luna-Platform"
     }
     
-    log.info(f"📤 Requisição EXATA conforme Evolution API:")
+    log.info(f"📤 Requisição conforme documentação UAZAPI oficial:")
     log.info(f"   URL: {url}")
     log.info(f"   Headers: {list(headers.keys())}")
     log.info(f"   Body: {body}")
@@ -70,21 +68,34 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
         log.info(f"📥 Response text: {response.text}")
         
         if response.status_code == 401:
-            log.error(f"❌ 401 Unauthorized - Token rejeitado!")
+            log.error(f"❌ 401 Unauthorized - Admin Token rejeitado!")
             log.error(f"❌ Token usado: {UAZAPI_ADMIN_TOKEN[:15]}...")
             log.error(f"❌ TESTE MANUAL:")
             log.error(f"   curl -X POST '{url}' \\")
             log.error(f"     -H 'Content-Type: application/json' \\")
-            log.error(f"     -H 'apikey: {UAZAPI_ADMIN_TOKEN}' \\")
+            log.error(f"     -H 'admintoken: {UAZAPI_ADMIN_TOKEN}' \\")
             log.error(f"     -d '{body}'")
-            raise UazapiError("Token rejeitado pela UAZAPI. Execute o curl acima manualmente para testar.")
+            raise UazapiError("Admin Token rejeitado pela UAZAPI. Verifique se está correto no painel.")
         
         response.raise_for_status()
         data = response.json()
         
         log.info(f"✅ SUCESSO! Instância criada: {instance_name}")
-        log.info(f"✅ Response completo: {data}")
-        return data
+        log.info(f"✅ Response message: {data.get('response', 'N/A')}")
+        log.info(f"✅ Instance data: {data.get('instance', {})}")
+        
+        # Retornar no formato esperado pelo backend
+        instance_data = data.get('instance', {})
+        return {
+            "instance": {
+                "instanceName": instance_data.get('name', instance_name),
+                "instanceId": instance_data.get('id', ''),
+                "token": instance_data.get('token', ''),
+                "status": instance_data.get('status', 'created'),
+                "qrcode": instance_data.get('qrcode', ''),
+                "paircode": instance_data.get('paircode', '')
+            }
+        }
         
     except httpx.HTTPStatusError as e:
         log.error(f"❌ Erro HTTP: {e.response.status_code}")
