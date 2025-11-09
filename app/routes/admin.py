@@ -6,6 +6,7 @@ import logging
 import os
 import jwt
 import bcrypt
+import json
 
 from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, EmailStr
@@ -283,7 +284,18 @@ async def configure_instance(
         
         # Salvar prompt anterior no histórico
         old_prompt = instance['prompt']
-        prompt_history = instance['prompt_history'] or []
+        
+        # Converter prompt_history de JSONB para list
+        prompt_history = []
+        if instance['prompt_history']:
+            if isinstance(instance['prompt_history'], str):
+                prompt_history = json.loads(instance['prompt_history'])
+            elif isinstance(instance['prompt_history'], list):
+                prompt_history = instance['prompt_history']
+            else:
+                prompt_history = []
+        
+        # Adicionar mudança ao histórico
         if old_prompt:
             prompt_history.append({
                 "changed_at": datetime.now(timezone.utc).isoformat(),
@@ -291,6 +303,9 @@ async def configure_instance(
                 "old_prompt": old_prompt,
                 "new_prompt": body.prompt
             })
+        
+        # Converter history para JSON string
+        prompt_history_json = json.dumps(prompt_history)
         
         # Atualizar instância
         conn.execute("""
@@ -301,11 +316,11 @@ async def configure_instance(
                 configured_at = NOW(),
                 prompt = %s,
                 admin_notes = %s,
-                prompt_history = %s,
+                prompt_history = %s::jsonb,
                 redirect_phone = %s,
                 updated_at = NOW()
             WHERE id = %s
-        """, (admin_id, body.prompt, body.notes, prompt_history, body.redirect_phone, instance_id))
+        """, (admin_id, body.prompt, body.notes, prompt_history_json, body.redirect_phone, instance_id))
         
         # Registrar ação
         conn.execute("""
