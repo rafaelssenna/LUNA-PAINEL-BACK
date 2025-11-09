@@ -216,6 +216,17 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
             except Exception as e:
                 log.error(f"❌ [CREATE] Falha ao obter QR code: {e}")
         
+        # 4. Iniciar trial de 14 dias automaticamente (por e-mail)
+        try:
+            from app.services.billing import ensure_trial, canonical_email_key
+            user_email = user.get("email", "")
+            if user_email:
+                billing_key = canonical_email_key(user_email)
+                ensure_trial(billing_key)
+                log.info(f"✅ Trial de 14 dias iniciado para {user_email}")
+        except Exception as e:
+            log.warning(f"⚠️ Falha ao iniciar trial: {e}")
+        
         response_data = {
             "instance_id": db_instance_id,
             "status": "disconnected",
