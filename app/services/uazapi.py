@@ -253,25 +253,27 @@ async def get_connection_state(instance_id: str, token: str) -> Dict[str, Any]:
             response.raise_for_status()
             data = response.json()
             
-            # UAZAPI retorna: {"instance": {"status": "connected", ...}, "connected": true}
-            # Precisamos pegar instance.status (string), não o campo "connected" (boolean)
+            # UAZAPI retorna: {"instance": {"status": "connected", ...}, "connected": bool}
+            # O campo "connected" raiz pode estar desatualizado!
+            # CONFIAR APENAS em instance.status (fonte oficial)
             instance_data = data.get("instance", {})
             status = instance_data.get("status", "disconnected")
             
-            # Campos adicionais para compatibilidade
+            # Campos adicionais (podem estar desatualizados)
             connected_bool = data.get("connected", False)
             logged_in = data.get("loggedIn", False)
             
             log.info(f"📊 [STATUS] UAZAPI response:")
-            log.info(f"   - instance.status: {status}")
-            log.info(f"   - connected (bool): {connected_bool}")
+            log.info(f"   - instance.status: {status} ← FONTE OFICIAL")
+            log.info(f"   - connected (bool raiz): {connected_bool} (pode estar desatualizado)")
             log.info(f"   - loggedIn: {logged_in}")
             
             # Retornar formato normalizado
+            # CONFIAR APENAS em instance.status!
             return {
                 "status": status,  # "disconnected", "connecting", ou "connected"
-                "state": "open" if (status == "connected" and connected_bool) else "close",
-                "connected": connected_bool,
+                "state": "open" if status == "connected" else "close",  # ✅ Baseado APENAS no status
+                "connected": status == "connected",  # ✅ Derivado do status, não do campo raiz
                 "loggedIn": logged_in,
                 "instance": instance_data
             }
