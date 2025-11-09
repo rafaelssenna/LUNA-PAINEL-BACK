@@ -31,6 +31,18 @@ def canonical_instance_key(key_or_token: str) -> str:
     return s if s.startswith("iid:") else f"iid:{s}"
 
 
+def canonical_email_key(email: str) -> str:
+    """
+    Cria billing_key baseado em e-mail (identificador principal do usuário).
+    Formato: email:<email_lowercase>
+    Exemplo: email:usuario@exemplo.com
+    """
+    e = (email or "").strip().lower()
+    if not e:
+        raise ValueError("E-mail não pode ser vazio")
+    return f"email:{e}"
+
+
 def make_billing_key(token: str, host: str, instance_id: Optional[str]) -> str:
     """
     Preferimos billing por INSTÂNCIA:
