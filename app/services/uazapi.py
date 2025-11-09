@@ -233,15 +233,19 @@ async def get_connection_state(instance_id: str, token: str) -> Dict[str, Any]:
     url = f"https://{UAZAPI_HOST}/instance/connectionState/{instance_id}"
     
     try:
+        log.info(f"🔍 Verificando connectionState: {url}")
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.get(
                 url,
-                headers={"apikey": token}
+                headers={"token": token}
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            log.info(f"📥 ConnectionState response: {data}")
+            return data
     except httpx.HTTPError as e:
         log.error(f"❌ Erro ao verificar status: {e}")
+        log.error(f"❌ Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         raise UazapiError(f"Falha ao verificar status: {str(e)}")
 
 async def get_instance_info(instance_id: str, token: str) -> Optional[Dict[str, Any]]:
@@ -259,17 +263,22 @@ async def get_instance_info(instance_id: str, token: str) -> Optional[Dict[str, 
             }
         }
     """
-    url = f"https://{UAZAPI_HOST}/instance/info/{instance_id}"
+    url = f"https://{UAZAPI_HOST}/instance/{instance_id}"
     
     try:
+        log.info(f"🔍 Buscando info da instância: {url}")
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.get(
                 url,
-                headers={"apikey": token}
+                headers={"token": token}
             )
             response.raise_for_status()
-            return response.json()
-    except httpx.HTTPError:
+            data = response.json()
+            log.info(f"📥 Instance info response: {data}")
+            return data
+    except httpx.HTTPError as e:
+        log.error(f"❌ Erro ao buscar info: {e}")
+        log.error(f"❌ Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         return None
 
 async def set_webhook(instance_id: str, token: str, webhook_url: str) -> Dict[str, Any]:
