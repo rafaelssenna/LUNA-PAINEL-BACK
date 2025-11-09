@@ -349,40 +349,37 @@ async def get_status_route(
         
         log.info(f"📊 [STATUS] Connecting? {is_connecting} | Connected? {connected} | Tem phone_number? {bool(phone_number)}")
         
-        # Se conectou e ainda não temos o número, buscar
+        # Se conectou e ainda não temos o número, extrair do owner
         if connected and not phone_number:
-            log.info(f"📞 [STATUS] Buscando número do telefone...")
-            info_result = await uazapi.get_instance_info(instance_id, token)
-            log.info(f"📥 [STATUS] Info result: {info_result}")
+            log.info(f"📞 [STATUS] Extraindo número do telefone...")
             
-            if info_result:
-                instance_info = info_result.get("instance", {})
-                owner = instance_info.get("owner")
-                log.info(f"👤 [STATUS] Owner encontrado: {owner}")
+            # Owner já vem na resposta de status dentro de instance
+            instance_info = state_result.get("instance", {})
+            owner = instance_info.get("owner")
+            log.info(f"👤 [STATUS] Owner na resposta: {owner}")
+            
+            if owner:
+                # Owner pode vir como "553188379840" ou "553188379840@s.whatsapp.net"
+                phone_number = uazapi.extract_phone_from_owner(owner)
+                log.info(f"📱 [STATUS] Número extraído: {phone_number}")
                 
-                if owner:
-                    phone_number = uazapi.extract_phone_from_owner(owner)
-                    log.info(f"📱 [STATUS] Número extraído: {phone_number}")
-                    
-                    # Atualizar banco
-                    with get_pool().connection() as conn:
-                        with conn.cursor() as cur:
-                            cur.execute(
-                                """
-                                UPDATE instances 
-                                SET status = %s, phone_number = %s, updated_at = NOW()
-                                WHERE id = %s
-                                """,
-                                ("connected", phone_number, instance_id)
-                            )
-                            conn.commit()
-                    
-                    current_status = "connected"
-                    log.info(f"✅ Instância {instance_id} conectada com número {phone_number}")
-                else:
-                    log.warning(f"⚠️ [STATUS] Owner não encontrado na resposta!")
+                # Atualizar banco
+                with get_pool().connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute(
+                            """
+                            UPDATE instances 
+                            SET status = %s, phone_number = %s, updated_at = NOW()
+                            WHERE id = %s
+                            """,
+                            ("connected", phone_number, instance_id)
+                        )
+                        conn.commit()
+                
+                current_status = "connected"
+                log.info(f"✅ Instância {instance_id} conectada com número {phone_number}")
             else:
-                log.warning(f"⚠️ [STATUS] info_result veio vazio!")
+                log.warning(f"⚠️ [STATUS] Owner não veio na resposta do status!")
         
         elif not connected and current_status == "connected":
             # Desconectou
