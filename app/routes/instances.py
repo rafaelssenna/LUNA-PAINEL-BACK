@@ -67,10 +67,56 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
             existing = cur.fetchone()
             
             if existing:
+                existing_id = existing["id"]
+                existing_status = existing["status"]
+                
+                log.info(f"⚠️ [CREATE] Usuário {user_id} já tem instância: {existing_id}")
+                log.info(f"⚠️ [CREATE] Status: {existing_status}")
+                
+                # Se já está conectada, não precisa de QR code
+                if existing_status == "connected":
+                    log.info(f"✅ [CREATE] Instância já conectada, redirecionando...")
+                    return CreateInstanceOut(
+                        instance_id=existing_id,
+                        status=existing_status,
+                        qrcode="",
+                        message="Você já possui uma instância conectada!"
+                    )
+                
+                # Se não está conectada, buscar novo QR code
+                log.info(f"🔄 [CREATE] Instância desconectada, buscando QR code...")
+                try:
+                    # Buscar token da instância
+                    cur.execute(
+                        "SELECT uazapi_token FROM instances WHERE id = %s",
+                        (existing_id,)
+                    )
+                    token_row = cur.fetchone()
+                    
+                    if token_row and token_row["uazapi_token"]:
+                        existing_token = token_row["uazapi_token"]
+                        
+                        # Gerar novo QR code
+                        qr_result = await uazapi.get_qrcode(existing_id, existing_token)
+                        qr_data = qr_result.get("qrcode", "")
+                        
+                        if qr_data:
+                            log.info(f"✅ [CREATE] QR code obtido para instância existente!")
+                            return CreateInstanceOut(
+                                instance_id=existing_id,
+                                status=existing_status,
+                                qrcode=qr_data,
+                                uazapi_token=existing_token,
+                                message="Instância encontrada! Escaneie o QR Code."
+                            )
+                except Exception as e:
+                    log.error(f"❌ [CREATE] Erro ao buscar QR code da instância existente: {e}")
+                
+                # Fallback: retornar sem QR code
                 return CreateInstanceOut(
-                    instance_id=existing["id"],
-                    status=existing["status"],
-                    message="Você já possui uma instância. Use /instances/{id}/qrcode para obter novo QR Code."
+                    instance_id=existing_id,
+                    status=existing_status,
+                    message="Você já possui uma instância. Acesse a aba Instâncias para obter QR Code."
                 )
     
     # Gerar nome único para a instância
