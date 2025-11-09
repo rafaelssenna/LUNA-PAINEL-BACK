@@ -1,7 +1,7 @@
 # app/routes/webhook.py
 """
 WEBHOOK WHATSAPP - Recebe mensagens e responde com IA
-Implementação do agente Luna integrada ao backend existente
+Implementação do agente Luna com Function Calling (igual ao TypeScript)
 """
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import os
 import logging
 import json
 import asyncio
+import random
 from typing import Dict, Any, List, Optional
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import defaultdict
 
 import httpx
@@ -27,12 +28,13 @@ log = logging.getLogger("uvicorn.error")
 # ==============================================================================
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-4o-mini")
+MAX_OUTPUT_TOKENS = int(os.getenv("MAX_OUTPUT_TOKENS", "300"))  # Luna deve ser concisa
 MAX_HISTORY = int(os.getenv("MAX_HISTORY_MESSAGES", "20"))
-BUFFER_SECONDS = int(os.getenv("MESSAGE_BUFFER_SECONDS", "7"))
-MIN_TYPING_DELAY = float(os.getenv("MIN_TYPING_DELAY_MS", "1500")) / 1000
-MAX_TYPING_DELAY = float(os.getenv("MAX_TYPING_DELAY_MS", "3500")) / 1000
-REDIRECT_PHONE = os.getenv("REDIRECT_PHONE", "")
-HUMAN_NAME = os.getenv("HUMAN_NAME", "Jonas")
+BUFFER_SECONDS = 7  # 7 segundos para agrupar mensagens
+UAZAPI_HOST = os.getenv("UAZAPI_HOST", "hia-clientes.uazapi.com")
+MIN_TYPING_DELAY = 1.5  # segundos
+MAX_TYPING_DELAY = 3.5  # segundos
+REDIRECT_PHONE = os.getenv("REDIRECT_PHONE", "")  # Fallback global
 
 # Buffer de mensagens (número -> dados pendentes)
 pending_messages: Dict[str, Dict[str, Any]] = {}
@@ -42,43 +44,8 @@ processing_lock: Dict[str, bool] = defaultdict(bool)
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ==============================================================================
-# PROMPT PADRÃO
+# FUNÇÕES AUXILIARES
 # ==============================================================================
-DEFAULT_PROMPT = """# LUNA — IA DE PROSPECÇÃO B2B
-
-Você é Luna da Helsen IA. Você encontra empresas que querem comprar o que o cliente vende.
-
-## OBJETIVO
-Fazer o cliente entender que você é a solução e aceitar falar com o Jonas.
-
-## COMO FUNCIONA
-Você mapeia o nicho e encontra empresas que pediram retorno. O cliente só fala com quem já quer comprar.
-
-## CONVERSA
-
-1. INÍCIO: "Oi! Empresas da sua área têm dificuldade pra conseguir clientes novos. Aí também acontece?"
-
-2. EXPLIQUE BEM: Mostre como você resolve, dê exemplo do segmento, pergunte se faz sentido.
-
-3. INTERESSE: Se disser "faz sentido", "quero saber mais", "sim":
-   - send_text("Perfeito! Vou te encaminhar pro Jonas agora.")
-   - handoff()
-
-4. REJEIÇÃO: Se disser "não quero", "não serve":
-   - "Tranquilo! Qualquer coisa, estamos aqui. Boa sorte!"
-   - PARE. Não insista.
-
-## REGRAS
-- Seja natural, não robótica
-- Mensagens curtas (1-2 frases)
-- Sempre faça perguntas
-- Não seja vaga
-- Não use jargões (B2B, leads, prospecção)
-
-## FERRAMENTAS
-- send_text(message) - Envia texto
-- handoff() - Encaminha pro Jonas (OBRIGATÓRIO após autorização!)
-"""
 
 # ==============================================================================
 # FUNÇÕES AUXILIARES
@@ -153,11 +120,16 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
                 if not row:
                     return None
                 
+                # Se não tem prompt configurado, não processa (admin ainda não configurou)
+                if not row[3]:
+                    log.warning(f"⚠️ Instância {instance_id} sem prompt configurado")
+                    return None
+                
                 return {
                     "id": row[0],
                     "host": row[1],
                     "token": row[2],
-                    "prompt": row[3] or DEFAULT_PROMPT,
+                    "prompt": row[3],  # ✅ Prompt específico da instância (configurado pelo admin)
                     "status": row[4],
                     "redirect_phone": row[5],  # ✅ Número específico da instância
                     "admin_status": row[6]  # ✅ Status de configuração do admin
