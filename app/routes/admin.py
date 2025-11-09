@@ -378,42 +378,216 @@ async def configure_instance(
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao configurar instância: {str(e)}")
 
+@router.get("/instances/{instance_id}")
+async def get_instance_details(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Buscar detalhes completos de uma instância (incluindo prompt)"""
+    
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT 
+                        i.id,
+                        i.user_id,
+                        i.phone_number,
+                        i.status,
+                        i.admin_status,
+                        i.prompt,
+                        i.redirect_phone,
+                        i.admin_notes,
+                        i.configured_at,
+                        i.created_at,
+                        i.updated_at,
+                        u.email as user_email,
+                        u.name as user_name
+                    FROM instances i
+                    LEFT JOIN users u ON i.user_id = u.id
+                    WHERE i.id = %s
+                """, (instance_id,))
+                
+                row = cur.fetchone()
+                
+                if not row:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+                
+                return {
+                    "id": row[0],
+                    "user_id": row[1],
+                    "phone_number": row[2],
+                    "status": row[3],
+                    "admin_status": row[4],
+                    "prompt": row[5],  # ✅ Prompt completo
+                    "redirect_phone": row[6],
+                    "admin_notes": row[7],
+                    "configured_at": row[8].isoformat() if row[8] else None,
+                    "created_at": row[9].isoformat() if row[9] else None,
+                    "updated_at": row[10].isoformat() if row[10] else None,
+                    "user_email": row[11],
+                    "user_name": row[12]
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao buscar instância: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @router.post("/instances/{instance_id}/suspend")
 async def suspend_instance(
     instance_id: str,
-    reason: str,
+    body: Dict,
     admin: Dict = Depends(get_current_admin)
 ):
-    """Suspender uma instância"""
+    """Suspender uma instância (parar IA)"""
+    
+    reason = body.get("reason", "Suspensa pelo admin")
+    admin_id = int(admin['sub'].split(':')[1])
+    
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id FROM instances WHERE id = %s", (instance_id,))
+                instance = cur.fetchone()
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+                
+                log.info(f"⚠️ [ADMIN] Suspendendo instância {instance_id}: {reason}")
+                
+                # Suspender (muda admin_status para suspended)
+                cur.execute("""
+                    UPDATE instances
+                    SET 
+                        admin_status = 'suspended',
+                        admin_notes = COALESCE(admin_notes || E'\\n', '') || '[' || NOW() || '] Suspensa: ' || %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (reason, instance_id))
+                
+                # Registrar ação
+                cur.execute("""
+                    INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description, created_at)
+                    VALUES (%s, 'suspend_instance', 'instance', %s, %s, NOW())
+                """, (admin_id, instance_id, f'Instância suspensa: {reason}'))
+                
+                conn.commit()
+                
+                log.info(f"✅ [ADMIN] Instância {instance_id} suspensa com sucesso")
+                
+        return {"ok": True, "message": "Instância suspensa - IA não processará mais mensagens"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao suspender instância: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/instances/{instance_id}/activate")
+async def activate_instance(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Reativar uma instância suspensa"""
     
     admin_id = int(admin['sub'].split(':')[1])
     
-    with get_pool().connection() as conn:
-        instance = conn.execute(
-            "SELECT * FROM instances WHERE id = %s",
-            (instance_id,)
-        ).fetchone()
-        
-        if not instance:
-            raise HTTPException(status_code=404, detail="Instância não encontrada")
-        
-        # Suspender
-        conn.execute("""
-            UPDATE instances
-            SET 
-                admin_status = 'suspended',
-                admin_notes = COALESCE(admin_notes || E'\\n', '') || '[' || NOW() || '] Suspensa: ' || %s,
-                updated_at = NOW()
-            WHERE id = %s
-        """, (reason, instance_id))
-        
-        # Registrar ação
-        conn.execute("""
-            INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description)
-            VALUES (%s, 'suspend_instance', 'instance', %s, %s)
-        """, (admin_id, instance_id, f'Instância suspensa: {reason}'))
-        
-        return {"ok": True, "message": "Instância suspensa"}
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT id, admin_status FROM instances WHERE id = %s", (instance_id,))
+                instance = cur.fetchone()
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+                
+                log.info(f"✅ [ADMIN] Reativando instância {instance_id}")
+                
+                # Reativar
+                cur.execute("""
+                    UPDATE instances
+                    SET 
+                        admin_status = 'active',
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (instance_id,))
+                
+                # Registrar ação
+                cur.execute("""
+                    INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description, created_at)
+                    VALUES (%s, 'activate_instance', 'instance', %s, 'Instância reativada', NOW())
+                """, (admin_id, instance_id))
+                
+                conn.commit()
+                
+                log.info(f"✅ [ADMIN] Instância {instance_id} reativada")
+                
+        return {"ok": True, "message": "Instância reativada"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao reativar instância: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/instances/{instance_id}/prompt")
+async def update_prompt(
+    instance_id: str,
+    body: Dict,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Atualizar apenas o prompt de uma instância"""
+    
+    new_prompt = body.get("prompt", "").strip()
+    
+    if not new_prompt:
+        raise HTTPException(status_code=400, detail="Prompt não pode ser vazio")
+    
+    admin_id = int(admin['sub'].split(':')[1])
+    
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar prompt anterior
+                cur.execute("SELECT prompt FROM instances WHERE id = %s", (instance_id,))
+                instance = cur.fetchone()
+                
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+                
+                old_prompt = instance[0]
+                
+                log.info(f"📝 [ADMIN] Atualizando prompt da instância {instance_id}")
+                log.info(f"   Prompt anterior: {len(old_prompt or '')} caracteres")
+                log.info(f"   Prompt novo: {len(new_prompt)} caracteres")
+                
+                # Atualizar prompt
+                cur.execute("""
+                    UPDATE instances
+                    SET 
+                        prompt = %s,
+                        updated_at = NOW()
+                    WHERE id = %s
+                """, (new_prompt, instance_id))
+                
+                # Registrar ação
+                cur.execute("""
+                    INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description, created_at)
+                    VALUES (%s, 'update_prompt', 'instance', %s, 'Prompt atualizado', NOW())
+                """, (admin_id, instance_id))
+                
+                conn.commit()
+                
+                log.info(f"✅ [ADMIN] Prompt atualizado com sucesso!")
+                
+        return {"ok": True, "message": "Prompt atualizado com sucesso"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao atualizar prompt: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @router.get("/activity")
 async def get_activity(admin: Dict = Depends(get_current_admin)):
