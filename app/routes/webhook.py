@@ -109,6 +109,7 @@ def extract_number(data: Dict[str, Any]) -> str:
 async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
     """Busca configuração da instância no banco"""
     try:
+        log.info(f"🔍 [CONFIG] Buscando instância: {instance_id}")
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
@@ -121,12 +122,22 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
                     (instance_id,)
                 )
                 row = cur.fetchone()
+                
                 if not row:
+                    log.error(f"❌ [CONFIG] Instância {instance_id} NÃO EXISTE no banco!")
+                    log.error(f"   Verifique se o ID está correto")
                     return None
+                
+                log.info(f"✅ [CONFIG] Instância encontrada no banco")
+                log.info(f"   ID: {row[0]}")
+                log.info(f"   Status: {row[4]}")
+                log.info(f"   Admin Status: {row[6]}")
+                log.info(f"   Tem prompt: {'SIM' if row[3] else 'NÃO'}")
+                log.info(f"   Redirect phone: {row[5] or 'NÃO CONFIGURADO'}")
                 
                 # Se não tem prompt configurado, não processa (admin ainda não configurou)
                 if not row[3]:
-                    log.warning(f"⚠️ Instância {instance_id} sem prompt configurado")
+                    log.warning(f"⚠️ [CONFIG] Instância {instance_id} sem prompt configurado")
                     return None
                 
                 return {
