@@ -66,8 +66,9 @@ def extract_text(data: Dict[str, Any]) -> str:
         ["message", "extendedTextMessage", "text"],
         ["body"],
         ["caption"],
+        ["chat", "wa_lastMessageTextVote"],  # ← UAZAPI envia texto aqui!
         ["chat", "text"],
-        ["chat", "lastMessage", "text"],  # ← UAZAPI pode enviar assim
+        ["chat", "lastMessage", "text"],
         ["chat", "lastMessage", "body"],
         ["data", "message", "conversation"],
         ["data", "text"],
@@ -478,12 +479,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         data = {}
     
     # Extrai dados
-    # UAZAPI envia "id" no payload raiz
+    # UAZAPI envia "id" dentro de "chat"
+    chat = data.get("chat", {})
     instance_id = (
         data.get("instance_id") or 
         data.get("instanceId") or 
         data.get("instance") or 
-        data.get("id")  # ← UAZAPI usa "id" no payload raiz!
+        data.get("id") or
+        chat.get("id")  # ← UAZAPI envia dentro de "chat"!
     )
     
     number = extract_number(data)
