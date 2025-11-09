@@ -40,34 +40,65 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
     log.info(f"🔄 Host: {UAZAPI_HOST}")
     log.info(f"🔄 Token presente: {bool(UAZAPI_ADMIN_TOKEN)} (length: {len(UAZAPI_ADMIN_TOKEN)})")
     
-    try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            response = await client.post(
-                url,
-                headers={"apikey": UAZAPI_ADMIN_TOKEN},
-                json={
-                    "instanceName": instance_name,
-                    "qrcode": True,
-                    "integration": "WHATSAPP-BAILEYS"
-                }
-            )
+    # Testar diferentes formatos de header E endpoints
+    test_configs = [
+        # (endpoint_path, headers_dict)
+        ("/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}),
+        ("/instance/create", {"x-api-key": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {"admin_token": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {"global_apikey": UAZAPI_ADMIN_TOKEN}),
+        ("/api/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
+        ("/api/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}),
+        ("/instances/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
+    ]
+    
+    last_error = None
+    
+    for idx, (endpoint_path, headers) in enumerate(test_configs):
+        full_url = f"https://{UAZAPI_HOST}{endpoint_path}"
+        log.info(f"🔄 Tentativa {idx + 1}/{len(test_configs)}")
+        log.info(f"   URL: {full_url}")
+        log.info(f"   Headers: {list(headers.keys())}")
+        
+        try:
+            async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+                response = await client.post(
+                    full_url,
+                    headers=headers,
+                    json={
+                        "instanceName": instance_name,
+                        "qrcode": True,
+                        "integration": "WHATSAPP-BAILEYS"
+                    }
+                )
             
-            log.info(f"📥 Response status: {response.status_code}")
-            log.info(f"📥 Response text: {response.text[:500]}")  # Primeiros 500 chars
-            
-            response.raise_for_status()
-            data = response.json()
-            log.info(f"✅ Instância criada na UAZAPI: {instance_name}")
-            log.info(f"✅ Response data keys: {list(data.keys())}")
-            return data
-    except httpx.HTTPError as e:
-        log.error(f"❌ Erro HTTP ao criar instância: {e}")
-        log.error(f"❌ Status code: {getattr(e.response, 'status_code', 'N/A')}")
-        log.error(f"❌ Response text: {getattr(e.response, 'text', 'N/A')[:500]}")
-        raise UazapiError(f"Falha ao criar instância: {str(e)}")
-    except Exception as e:
-        log.error(f"❌ Erro inesperado ao criar instância: {type(e).__name__}: {e}")
-        raise UazapiError(f"Erro inesperado: {str(e)}")
+                log.info(f"📥 Response status: {response.status_code}")
+                log.info(f"📥 Response text: {response.text[:500]}")  # Primeiros 500 chars
+                
+                response.raise_for_status()
+                data = response.json()
+                log.info(f"✅ Instância criada na UAZAPI: {instance_name}")
+                log.info(f"✅ Response data keys: {list(data.keys())}")
+                log.info(f"✅ Headers que funcionaram: {list(headers.keys())}")
+                return data
+                
+        except httpx.HTTPStatusError as e:
+            last_error = e
+            log.warning(f"⚠️ Tentativa {idx + 1} falhou: {e.response.status_code} - {e.response.text[:200]}")
+            if idx < len(test_configs) - 1:
+                continue  # Tentar próxima configuração
+            # Se foi a última tentativa, raise
+            log.error(f"❌ TODAS as {len(test_configs)} tentativas falharam!")
+            log.error(f"❌ Último status: {e.response.status_code}")
+            log.error(f"❌ Último response: {e.response.text[:500]}")
+            raise UazapiError(f"Falha ao criar instância após {len(test_configs)} tentativas. Verifique token e endpoint no painel UAZAPI.")
+        except Exception as e:
+            last_error = e
+            log.error(f"❌ Erro na tentativa {idx + 1}: {type(e).__name__}: {e}")
+            if idx < len(test_configs) - 1:
+                continue
+            raise UazapiError(f"Erro inesperado após {len(test_configs)} tentativas: {str(e)}")
 
 async def get_qrcode(instance_id: str, token: str) -> Dict[str, Any]:
     """
