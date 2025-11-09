@@ -474,7 +474,8 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                         "SELECT COUNT(*) FROM instances WHERE phone_number = %s",
                         (owner,)
                     )
-                    count = cur.fetchone()[0]
+                    result = cur.fetchone()
+                    count = result['count'] if result else 0
                     log.info(f"🔍 [WEBHOOK] Instâncias encontradas com phone_number={owner}: {count}")
                     
                     # Buscar a conectada e ativa
@@ -487,18 +488,18 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
                     if rows:
                         log.info(f"🔍 [WEBHOOK] Instâncias encontradas:")
                         for row in rows:
-                            log.info(f"   - ID: {row[0]}, Status: {row[1]}, Admin: {row[2]}")
+                            log.info(f"   - ID: {row['id']}, Status: {row['status']}, Admin: {row['admin_status']}")
                         
                         # Pegar a primeira que está connected
                         for row in rows:
-                            if row[1] == 'connected':
-                                instance_id = row[0]
+                            if row['status'] == 'connected':
+                                instance_id = row['id']
                                 log.info(f"✅ [WEBHOOK] Usando instância: {instance_id}")
                                 break
                         
                         if not instance_id and rows:
                             # Se nenhuma connected, usa a mais recente
-                            instance_id = rows[0][0]
+                            instance_id = rows[0]['id']
                             log.warning(f"⚠️ [WEBHOOK] Nenhuma connected, usando mais recente: {instance_id}")
                     else:
                         log.error(f"❌ [WEBHOOK] Nenhuma instância com phone_number={owner}")
