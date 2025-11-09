@@ -143,7 +143,7 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT id, uazapi_host, uazapi_token, prompt, status, redirect_phone
+                    SELECT id, uazapi_host, uazapi_token, prompt, status, redirect_phone, admin_status
                     FROM instances
                     WHERE id = %s
                     """,
@@ -159,7 +159,8 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
                     "token": row[2],
                     "prompt": row[3] or DEFAULT_PROMPT,
                     "status": row[4],
-                    "redirect_phone": row[5]  # ✅ Número específico da instância
+                    "redirect_phone": row[5],  # ✅ Número específico da instância
+                    "admin_status": row[6]  # ✅ Status de configuração do admin
                 }
     except Exception as e:
         log.error(f"Erro ao buscar config da instância {instance_id}: {e}")
@@ -174,19 +175,16 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
             with conn.cursor() as cur:
                 cur.execute(
                     """
-                    SELECT role, content FROM (
-                        SELECT 'user' as role, text as content, created_at
-                        FROM messages
-                        WHERE instance_id = %s AND chatid = %s AND direction = 'in'
-                        UNION ALL
-                        SELECT 'assistant' as role, text as content, created_at
-                        FROM messages
-                        WHERE instance_id = %s AND chatid = %s AND direction = 'out'
-                    ) t
+                    SELECT 
+                        CASE WHEN from_me THEN 'assistant' ELSE 'user' END as role,
+                        content,
+                        created_at
+                    FROM messages
+                    WHERE instance_id = %s AND chat_id = %s
                     ORDER BY created_at DESC
                     LIMIT %s
                     """,
-                    (instance_id, number, instance_id, number, MAX_HISTORY)
+                    (instance_id, number, MAX_HISTORY)
                 )
                 rows = cur.fetchall()
                 # Inverte para ordem cronológica
@@ -199,15 +197,21 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
 async def save_message(instance_id: str, chatid: str, text: str, direction: str):
     """Salva mensagem no banco"""
     try:
+        import time
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
+                from_me = (direction == "out")
+                message_id = f"msg_{int(time.time() * 1000)}"
+                timestamp = int(time.time())
+                
                 cur.execute(
                     """
-                    INSERT INTO messages (instance_id, chatid, text, direction, created_at)
-                    VALUES (%s, %s, %s, %s, %s)
+                    INSERT INTO messages 
+                    (instance_id, chat_id, content, from_me, message_id, timestamp, created_at, sender)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
-                    (instance_id, chatid, text, direction, datetime.utcnow())
+                    (instance_id, chatid, text, from_me, message_id, timestamp, datetime.utcnow(), chatid)
                 )
                 conn.commit()
     except Exception as e:
@@ -315,9 +319,22 @@ async def process_message(instance_id: str, number: str, text: str):
     try:
         # Busca config da instância
         config = await get_instance_config(instance_id)
-        if not config or config["status"] != "active":
-            log.warning(f"Instância {instance_id} não ativa")
+        if not config:
+            log.warning(f"❌ Instância {instance_id} não encontrada no banco")
             return
+        
+        # Verificar se está conectada
+        if config["status"] != "connected":
+            log.warning(f"⚠️ Instância {instance_id} não conectada (status={config['status']})")
+            return
+        
+        # Verificar se está configurada pelo admin
+        admin_status = config.get("admin_status", "pending_config")
+        if admin_status not in ["configured", "active"]:
+            log.warning(f"⚠️ Instância {instance_id} ainda não configurada pelo admin (admin_status={admin_status})")
+            return
+        
+        log.info(f"✅ Instância {instance_id} pronta para processar mensagens (status={config['status']}, admin_status={admin_status})")
         
         # Salva mensagem do usuário
         await save_message(instance_id, number, text, "in")
