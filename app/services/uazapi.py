@@ -223,29 +223,45 @@ async def get_connection_state(instance_id: str, token: str) -> Dict[str, Any]:
     """
     Verifica o estado da conexão de uma instância.
     
+    Conforme docs.uazapi.com:
+    Endpoint: GET /instance/status
+    Header: token (token da instância)
+    
     Returns:
         {
-            "instance": "luna_123_1699999999",
+            "status": "connected",  # ou "connecting", "disconnected"
             "state": "open",  # ou "close", "connecting"
-            "statusConnection": "connected"
+            ...
         }
     """
-    url = f"https://{UAZAPI_HOST}/instance/connectionState/{instance_id}"
+    url = f"https://{UAZAPI_HOST}/instance/status"
     
     try:
-        log.info(f"🔍 Verificando connectionState: {url}")
+        log.info(f"🔍 [STATUS] Verificando status da instância: {instance_id}")
+        log.info(f"🔍 [STATUS] URL: {url}")
+        log.info(f"🔍 [STATUS] Token: {token[:20]}...")
+        
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
             response = await client.get(
                 url,
                 headers={"token": token}
             )
+            
+            log.info(f"📥 [STATUS] Response status: {response.status_code}")
+            log.info(f"📥 [STATUS] Response body: {response.text[:500]}")
+            
             response.raise_for_status()
             data = response.json()
-            log.info(f"📥 ConnectionState response: {data}")
+            
+            # Log do status retornado
+            status = data.get("status", "unknown")
+            state = data.get("state", "unknown")
+            log.info(f"📊 [STATUS] Status: {status} | State: {state}")
+            
             return data
     except httpx.HTTPError as e:
-        log.error(f"❌ Erro ao verificar status: {e}")
-        log.error(f"❌ Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+        log.error(f"❌ [STATUS] Erro HTTP: {e}")
+        log.error(f"❌ [STATUS] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
         raise UazapiError(f"Falha ao verificar status: {str(e)}")
 
 async def get_instance_info(instance_id: str, token: str) -> Optional[Dict[str, Any]]:
