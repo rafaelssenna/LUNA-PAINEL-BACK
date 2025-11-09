@@ -134,33 +134,41 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         # 4. Conectar instância e buscar QR Code
         qr_data = instance_data.get("qrcode")  # Tentar da resposta primeiro
         
-        log.info(f"📊 QR code da criação: presente={bool(qr_data)}")
+        log.info(f"📊 [CREATE] QR code na resposta de criação: presente={bool(qr_data)}")
         
         if not qr_data:
-            # QR code não veio na criação, usar get_qrcode que tenta múltiplos endpoints
+            # QR code não veio na criação, chamar /instance/connect
             try:
-                log.info(f"🔄 QR code vazio, tentando obter via endpoints...")
+                log.info(f"🔄 [CREATE] QR code vazio, chamando /instance/connect...")
                 qr_result = await uazapi.get_qrcode(instance_id, instance_token)
                 qr_data = qr_result.get("qrcode")
                 paircode = qr_result.get("paircode")
                 
                 if qr_data:
-                    log.info(f"✅ QR code obtido! (length: {len(qr_data)})")
+                    log.info(f"✅ [CREATE] QR code obtido! (length: {len(qr_data)})")
                 elif paircode:
-                    log.info(f"✅ Pair code obtido: {paircode}")
+                    log.info(f"✅ [CREATE] Pair code obtido: {paircode}")
                 else:
-                    log.warning(f"⚠️ QR code não disponível ainda")
-                    log.warning(f"⚠️ Usuário pode obter depois via /instances/{instance_id}/qrcode")
+                    log.warning(f"⚠️ [CREATE] QR code não disponível ainda")
+                    log.warning(f"⚠️ [CREATE] Usuário pode obter depois via /instances/{instance_id}/qrcode")
             except Exception as e:
-                log.error(f"❌ Falha ao obter QR code: {e}")
+                log.error(f"❌ [CREATE] Falha ao obter QR code: {e}")
         
-        return {
-            "instance_id": db_instance_id,  # ← Retornar ID da UAZAPI (para o frontend usar)
+        response_data = {
+            "instance_id": db_instance_id,
             "status": "disconnected",
-            "qrcode": qr_data,
-            "uazapi_token": instance_token,  # ← Retornar token para autenticação
+            "qrcode": qr_data if qr_data else "",
+            "uazapi_token": instance_token,
             "message": "Instância criada! Escaneie o QR Code com seu WhatsApp."
         }
+        
+        log.info(f"📤 [CREATE] Retornando para frontend:")
+        log.info(f"   - instance_id: {response_data['instance_id']}")
+        log.info(f"   - status: {response_data['status']}")
+        log.info(f"   - qrcode: presente={bool(response_data['qrcode'])}, length={len(response_data['qrcode']) if response_data['qrcode'] else 0}")
+        log.info(f"   - uazapi_token: {response_data['uazapi_token'][:20]}...")
+        
+        return response_data
         
     except uazapi.UazapiError as e:
         raise HTTPException(500, f"Erro ao criar instância: {str(e)}")
