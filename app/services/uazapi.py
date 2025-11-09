@@ -105,29 +105,44 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
         log.error(f"❌ Erro inesperado: {type(e).__name__}: {e}")
         raise UazapiError(f"Erro inesperado: {str(e)}")
 
-async def get_qrcode(instance_id: str, token: str) -> Dict[str, Any]:
+async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
     """
-    Busca o QR Code de uma instância.
+    Conecta a instância e gera o QR Code.
+    Deve ser chamado após criar a instância para obter o QR code.
     
     Returns:
         {
             "qrcode": "data:image/png;base64,iVBOR...",
-            "status": "qr_code"
+            "paircode": "1234-5678",
+            ...
         }
     """
-    url = f"https://{UAZAPI_HOST}/instance/qrcode/{instance_id}"
+    url = f"https://{UAZAPI_HOST}/instance/connect"
     
     try:
         async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            response = await client.get(
+            response = await client.post(
                 url,
-                headers={"apikey": token}
+                headers={
+                    "Content-Type": "application/json",
+                    "token": token  # Header correto para instância
+                },
+                json={"instanceName": instance_id}
             )
             response.raise_for_status()
-            return response.json()
+            data = response.json()
+            log.info(f"✅ Instância conectada: {instance_id}")
+            return data
     except httpx.HTTPError as e:
-        log.error(f"❌ Erro ao buscar QR code: {e}")
-        raise UazapiError(f"Falha ao buscar QR Code: {str(e)}")
+        log.error(f"❌ Erro ao conectar instância: {e}")
+        raise UazapiError(f"Falha ao conectar instância: {str(e)}")
+
+async def get_qrcode(instance_id: str, token: str) -> Dict[str, Any]:
+    """
+    Busca o QR Code de uma instância (via conexão).
+    Chama connect_instance internamente.
+    """
+    return await connect_instance(instance_id, token)
 
 async def get_connection_state(instance_id: str, token: str) -> Dict[str, Any]:
     """
