@@ -121,12 +121,13 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         except Exception as e:
             log.warning(f"⚠️ Falha ao buscar QR code inicial: {e}")
         
-        return CreateInstanceOut(
-            instance_id=instance_name,
-            status="disconnected",
-            qrcode=qr_data,
-            message="Instância criada! Escaneie o QR Code com seu WhatsApp."
-        )
+        return {
+            "instance_id": instance_name,
+            "status": "disconnected",
+            "qrcode": qr_data,
+            "uazapi_token": instance_token,  # ← Retornar token para autenticação
+            "message": "Instância criada! Escaneie o QR Code com seu WhatsApp."
+        }
         
     except uazapi.UazapiError as e:
         raise HTTPException(500, f"Erro ao criar instância: {str(e)}")
