@@ -40,32 +40,43 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
     log.info(f"🔄 Host: {UAZAPI_HOST}")
     log.info(f"🔄 Token presente: {bool(UAZAPI_ADMIN_TOKEN)} (length: {len(UAZAPI_ADMIN_TOKEN)})")
     
-    # Testar diferentes formatos de header E endpoints
+    # Headers base (sempre incluir)
+    base_headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "User-Agent": "Luna-Backend/1.0"
+    }
+    
+    # Testar diferentes formatos de autenticação
     test_configs = [
-        # (endpoint_path, headers_dict)
+        # (endpoint_path, auth_header_dict)
         ("/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
         ("/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}),
         ("/instance/create", {"x-api-key": UAZAPI_ADMIN_TOKEN}),
         ("/instance/create", {"admin_token": UAZAPI_ADMIN_TOKEN}),
         ("/instance/create", {"global_apikey": UAZAPI_ADMIN_TOKEN}),
-        ("/api/instance/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
-        ("/api/instance/create", {"Authorization": f"Bearer {UAZAPI_ADMIN_TOKEN}"}),
-        ("/instances/create", {"apikey": UAZAPI_ADMIN_TOKEN}),
+        ("/instance/create", {"api-key": UAZAPI_ADMIN_TOKEN}),  # Com hífen
+        ("/instance/create", {"Api-Key": UAZAPI_ADMIN_TOKEN}),  # Capitalizado
+        ("/instance/create", {"token": UAZAPI_ADMIN_TOKEN}),  # Simples
     ]
     
     last_error = None
     
-    for idx, (endpoint_path, headers) in enumerate(test_configs):
+    for idx, (endpoint_path, auth_headers) in enumerate(test_configs):
         full_url = f"https://{UAZAPI_HOST}{endpoint_path}"
+        
+        # Mesclar headers base com headers de autenticação
+        full_headers = {**base_headers, **auth_headers}
+        
         log.info(f"🔄 Tentativa {idx + 1}/{len(test_configs)}")
         log.info(f"   URL: {full_url}")
-        log.info(f"   Headers: {list(headers.keys())}")
+        log.info(f"   Auth header: {list(auth_headers.keys())[0]}")
         
         try:
             async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
                 response = await client.post(
                     full_url,
-                    headers=headers,
+                    headers=full_headers,
                     json={
                         "instanceName": instance_name,
                         "qrcode": True,
@@ -80,7 +91,8 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
                 data = response.json()
                 log.info(f"✅ Instância criada na UAZAPI: {instance_name}")
                 log.info(f"✅ Response data keys: {list(data.keys())}")
-                log.info(f"✅ Headers que funcionaram: {list(headers.keys())}")
+                log.info(f"✅ Auth header que funcionou: {list(auth_headers.keys())[0]}")
+                log.info(f"✅ Endpoint que funcionou: {endpoint_path}")
                 return data
                 
         except httpx.HTTPStatusError as e:
