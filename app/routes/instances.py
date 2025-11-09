@@ -303,19 +303,32 @@ async def get_status_route(
     
     # Verificar status na UAZAPI (instance_id já é o ID correto)
     try:
+        log.info(f"🔍 [STATUS] Verificando status da instância {instance_id}")
+        log.info(f"🔍 [STATUS] Token: {token[:20]}... | Status atual no banco: {current_status}")
+        
         state_result = await uazapi.get_connection_state(instance_id, token)
         uazapi_state = state_result.get("state", "close")
         
+        log.info(f"📊 [STATUS] UAZAPI retornou state: {uazapi_state}")
+        
         connected = uazapi_state == "open"
+        
+        log.info(f"📊 [STATUS] Conectado? {connected} | Tem phone_number no banco? {bool(phone_number)}")
         
         # Se conectou e ainda não temos o número, buscar
         if connected and not phone_number:
+            log.info(f"📞 [STATUS] Buscando número do telefone...")
             info_result = await uazapi.get_instance_info(instance_id, token)
+            log.info(f"📥 [STATUS] Info result: {info_result}")
+            
             if info_result:
                 instance_info = info_result.get("instance", {})
                 owner = instance_info.get("owner")
+                log.info(f"👤 [STATUS] Owner encontrado: {owner}")
+                
                 if owner:
                     phone_number = uazapi.extract_phone_from_owner(owner)
+                    log.info(f"📱 [STATUS] Número extraído: {phone_number}")
                     
                     # Atualizar banco
                     with get_pool().connection() as conn:
@@ -332,6 +345,10 @@ async def get_status_route(
                     
                     current_status = "connected"
                     log.info(f"✅ Instância {instance_id} conectada com número {phone_number}")
+                else:
+                    log.warning(f"⚠️ [STATUS] Owner não encontrado na resposta!")
+            else:
+                log.warning(f"⚠️ [STATUS] info_result veio vazio!")
         
         elif not connected and current_status == "connected":
             # Desconectou
