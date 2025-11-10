@@ -389,6 +389,28 @@ def init_schema():
     
     CREATE INDEX IF NOT EXISTS idx_questionnaires_user_id ON user_questionnaires(user_id);
     CREATE INDEX IF NOT EXISTS idx_questionnaires_created ON user_questionnaires(created_at DESC);
+    
+    -- =========================================
+    -- AI MEMORY (Memória da IA por instância)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS ai_memory (
+      id                SERIAL PRIMARY KEY,
+      instance_id       TEXT NOT NULL,
+      role              TEXT NOT NULL CHECK (role IN ('user', 'assistant', 'system')),
+      content           TEXT NOT NULL,
+      timestamp         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      metadata          JSONB DEFAULT '{}'::jsonb
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_ai_memory_instance ON ai_memory(instance_id);
+    CREATE INDEX IF NOT EXISTS idx_ai_memory_timestamp ON ai_memory(instance_id, timestamp DESC);
+    
+    -- Comentário
+    COMMENT ON TABLE ai_memory IS 'Memória de conversas da IA por instância para contexto';
+    COMMENT ON COLUMN ai_memory.instance_id IS 'ID da instância WhatsApp';
+    COMMENT ON COLUMN ai_memory.role IS 'Papel da mensagem: user, assistant ou system';
+    COMMENT ON COLUMN ai_memory.content IS 'Conteúdo da mensagem';
+    COMMENT ON COLUMN ai_memory.metadata IS 'Dados adicionais (chat_id, message_id, etc)';
     """
     with get_pool().connection() as con:
         con.execute(sql)
