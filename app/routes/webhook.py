@@ -166,6 +166,9 @@ async def save_to_ai_memory(instance_id: str, role: str, content: str, metadata:
         metadata: Dados extras (chat_id, message_id, etc)
     """
     try:
+        log.info(f"💾 [MEMORY] TENTANDO SALVAR: instance_id={instance_id}, role={role}, content={content[:50]}...")
+        log.info(f"💾 [MEMORY] METADATA: {metadata}")
+        
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
@@ -178,9 +181,11 @@ async def save_to_ai_memory(instance_id: str, role: str, content: str, metadata:
                     (instance_id, role, content, json.dumps(metadata or {}))
                 )
                 conn.commit()
-                log.info(f"💾 [MEMORY] Salvo: {role} - {content[:50]}...")
+                log.info(f"✅ [MEMORY] SALVO COM SUCESSO: {role} - {content[:50]}...")
     except Exception as e:
-        log.error(f"❌ [MEMORY] Erro ao salvar: {e}")
+        log.error(f"❌ [MEMORY] ERRO AO SALVAR: {e}")
+        import traceback
+        log.error(f"❌ [MEMORY] TRACEBACK: {traceback.format_exc()}")
 
 
 async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
@@ -189,6 +194,8 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
     Esta tabela é específica para contexto da IA!
     """
     try:
+        log.info(f"📜 [MEMORY] BUSCANDO HISTÓRICO: number={number}, instance_id={instance_id}")
+        
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
@@ -199,7 +206,8 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
                     SELECT 
                         role,
                         content,
-                        timestamp
+                        timestamp,
+                        metadata
                     FROM ai_memory
                     WHERE instance_id = %s 
                       AND (metadata->>'chat_id' = %s OR metadata->>'number' = %s)
@@ -210,17 +218,31 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
                 )
                 rows = cur.fetchall()
                 
+                log.info(f"📜 [MEMORY] QUERY EXECUTADA. Rows encontradas: {len(rows)}")
+                
                 if rows:
                     log.info(f"📜 [MEMORY] Encontradas {len(rows)} mensagens no histórico")
+                    for i, row in enumerate(rows):
+                        log.info(f"📜 [MEMORY] Msg {i+1}: {row[0]} - {row[1][:30]}... - {row[3]}")
                 else:
                     log.info(f"📜 [MEMORY] Nenhum histórico anterior (primeira conversa)")
+                    
+                    # Vamos verificar se há ALGUMA mensagem para esta instância
+                    cur.execute(
+                        "SELECT COUNT(*) FROM ai_memory WHERE instance_id = %s",
+                        (instance_id,)
+                    )
+                    total_count = cur.fetchone()[0]
+                    log.info(f"📜 [MEMORY] Total de mensagens para instância {instance_id}: {total_count}")
                 
                 # Inverte para ordem cronológica (mais antiga → mais recente)
-                return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+                history = [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+                log.info(f"📜 [MEMORY] RETORNANDO {len(history)} mensagens para IA")
+                return history
     except Exception as e:
         log.error(f"❌ [MEMORY] Erro ao buscar histórico: {e}")
         import traceback
-        log.error(traceback.format_exc())
+        log.error(f"❌ [MEMORY] TRACEBACK: {traceback.format_exc()}")
         return []
 
 
