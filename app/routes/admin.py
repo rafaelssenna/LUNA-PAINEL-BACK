@@ -133,10 +133,35 @@ async def get_stats(admin: Dict = Depends(get_current_admin)):
 
 @router.get("/instances/pending")
 async def get_pending_instances(admin: Dict = Depends(get_current_admin)):
-    """Instâncias aguardando configuração"""
+    """
+    Instâncias aguardando configuração.
+    Inclui informações do questionário do usuário para facilitar configuração.
+    """
     
     with get_pool().connection() as conn:
-        rows = conn.execute("SELECT * FROM get_pending_instances()").fetchall()
+        rows = conn.execute("""
+            SELECT 
+                i.id as instance_uuid,
+                i.instance_id,
+                i.phone_number,
+                i.created_at,
+                u.email as user_email,
+                u.full_name as user_name,
+                q.company_name,
+                q.contact_phone,
+                q.contact_email,
+                q.product_service,
+                q.target_audience,
+                q.notification_phone,
+                q.prospecting_region,
+                q.has_whatsapp_number,
+                EXTRACT(EPOCH FROM (NOW() - i.created_at))/3600 as hours_waiting
+            FROM instances i
+            JOIN users u ON i.user_id = u.id
+            LEFT JOIN user_questionnaires q ON q.user_id = u.id
+            WHERE i.admin_status = 'pending_config'
+            ORDER BY i.created_at ASC
+        """).fetchall()
         
         return [
             {
@@ -146,7 +171,18 @@ async def get_pending_instances(admin: Dict = Depends(get_current_admin)):
                 "user_name": row['user_name'],
                 "phone_number": row['phone_number'],
                 "created_at": row['created_at'].isoformat() if row['created_at'] else None,
-                "hours_waiting": float(row['hours_waiting']) if row['hours_waiting'] else 0
+                "hours_waiting": float(row['hours_waiting']) if row['hours_waiting'] else 0,
+                # Informações do questionário
+                "questionnaire": {
+                    "company_name": row['company_name'],
+                    "contact_phone": row['contact_phone'],
+                    "contact_email": row['contact_email'],
+                    "product_service": row['product_service'],
+                    "target_audience": row['target_audience'],
+                    "notification_phone": row['notification_phone'],
+                    "prospecting_region": row['prospecting_region'],
+                    "has_whatsapp_number": row['has_whatsapp_number']
+                } if row['company_name'] else None
             }
             for row in rows
         ]
@@ -761,4 +797,131 @@ async def get_user_questionnaire(user_id: int, admin: Dict = Depends(get_current
             "prospecting_region": row['prospecting_region'],
             "created_at": row['created_at'].isoformat() if row['created_at'] else None,
             "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+        }
+
+
+# ==============================================================================
+# MEMÓRIA DA IA
+# ==============================================================================
+
+@router.get("/memory/{instance_id}")
+async def get_ai_memory(instance_id: str, limit: int = 50, admin: Dict = Depends(get_current_admin)):
+    """
+    Busca a memória da IA de uma instância específica.
+    Retorna as últimas N mensagens do contexto.
+    """
+    
+    with get_pool().connection() as conn:
+        rows = conn.execute("""
+            SELECT 
+                id,
+                instance_id,
+                role,
+                content,
+                timestamp,
+                metadata
+            FROM ai_memory
+            WHERE instance_id = %s
+            ORDER BY timestamp DESC
+            LIMIT %s
+        """, (instance_id, limit)).fetchall()
+        
+        return {
+            "instance_id": instance_id,
+            "total_messages": len(rows),
+            "messages": [
+                {
+                    "id": row['id'],
+                    "role": row['role'],
+                    "content": row['content'],
+                    "timestamp": row['timestamp'].isoformat() if row['timestamp'] else None,
+                    "metadata": row['metadata']
+                }
+                for row in reversed(rows)  # Inverter para ordem cronológica
+            ]
+        }
+
+
+@router.get("/memory/{instance_id}/stats")
+async def get_ai_memory_stats(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    """
+    Estatísticas da memória de uma instância.
+    """
+    
+    with get_pool().connection() as conn:
+        stats = conn.execute("""
+            SELECT 
+                COUNT(*) as total_messages,
+                COUNT(*) FILTER (WHERE role = 'user') as user_messages,
+                COUNT(*) FILTER (WHERE role = 'assistant') as assistant_messages,
+                MIN(timestamp) as first_message,
+                MAX(timestamp) as last_message
+            FROM ai_memory
+            WHERE instance_id = %s
+        """, (instance_id,)).fetchone()
+        
+        return {
+            "instance_id": instance_id,
+            "total_messages": stats['total_messages'] or 0,
+            "user_messages": stats['user_messages'] or 0,
+            "assistant_messages": stats['assistant_messages'] or 0,
+            "first_message": stats['first_message'].isoformat() if stats['first_message'] else None,
+            "last_message": stats['last_message'].isoformat() if stats['last_message'] else None
+        }
+
+
+@router.delete("/memory/{instance_id}")
+async def reset_ai_memory(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    """
+    Reseta (apaga) a memória de uma instância específica.
+    NÃO apaga toda a tabela, apenas as mensagens desta instância.
+    """
+    
+    admin_id = admin.get("sub", "").split(":")[-1]
+    
+    with get_pool().connection() as conn:
+        # Verificar se instância existe
+        instance = conn.execute("""
+            SELECT id, instance_id 
+            FROM instances 
+            WHERE id = %s OR instance_id = %s
+        """, (instance_id, instance_id)).fetchone()
+        
+        if not instance:
+            raise HTTPException(status_code=404, detail="Instância não encontrada")
+        
+        # Contar mensagens antes de deletar
+        count = conn.execute("""
+            SELECT COUNT(*) as count 
+            FROM ai_memory 
+            WHERE instance_id = %s
+        """, (instance_id,)).fetchone()
+        
+        messages_deleted = count['count'] or 0
+        
+        # Deletar memória desta instância
+        conn.execute("""
+            DELETE FROM ai_memory 
+            WHERE instance_id = %s
+        """, (instance_id,))
+        
+        # Registrar ação no log de admin
+        conn.execute("""
+            INSERT INTO admin_actions (admin_id, action_type, description)
+            VALUES (%s, %s, %s)
+        """, (
+            admin_id,
+            'reset_memory',
+            f"Memória resetada para instância {instance_id} ({messages_deleted} mensagens deletadas)"
+        ))
+        
+        conn.commit()
+        
+        log.info(f"[ADMIN] Memória da instância {instance_id} resetada ({messages_deleted} mensagens)")
+        
+        return {
+            "ok": True,
+            "instance_id": instance_id,
+            "messages_deleted": messages_deleted,
+            "message": f"Memória resetada com sucesso. {messages_deleted} mensagens deletadas."
         }
