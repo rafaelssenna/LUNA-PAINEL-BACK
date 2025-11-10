@@ -192,6 +192,9 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
     """
     Busca histórico de conversas da MEMÓRIA DA IA (ai_memory).
     Esta tabela é específica para contexto da IA!
+    
+    IMPORTANTE: Cada instância é única por número, então buscamos TODAS
+    as mensagens da instância, não precisamos filtrar por número.
     """
     try:
         log.info(f"📜 [MEMORY] BUSCANDO HISTÓRICO: number={number}, instance_id={instance_id}")
@@ -199,41 +202,34 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                # ✅ BUSCA DA TABELA AI_MEMORY (correta!)
-                # Filtra por metadata.chat_id para pegar apenas conversas deste número
+                # ✅ BUSCA SIMPLES: todas as mensagens da instância
+                # Cada instância é única para um número, não precisa filtrar por metadata
                 cur.execute(
                     """
                     SELECT 
                         role,
                         content,
-                        timestamp,
-                        metadata
+                        timestamp
                     FROM ai_memory
-                    WHERE instance_id = %s 
-                      AND (metadata->>'chat_id' = %s OR metadata->>'number' = %s)
+                    WHERE instance_id = %s
                     ORDER BY timestamp DESC
                     LIMIT %s
                     """,
-                    (instance_id, number, number, MAX_HISTORY)
+                    (instance_id, MAX_HISTORY)
                 )
                 rows = cur.fetchall()
                 
                 log.info(f"📜 [MEMORY] QUERY EXECUTADA. Rows encontradas: {len(rows)}")
                 
                 if rows:
-                    log.info(f"📜 [MEMORY] Encontradas {len(rows)} mensagens no histórico")
-                    for i, row in enumerate(rows):
-                        log.info(f"📜 [MEMORY] Msg {i+1}: {row[0]} - {row[1][:30]}... - {row[3]}")
+                    log.info(f"📜 [MEMORY] ✅ Encontradas {len(rows)} mensagens no histórico")
+                    # Mostra as últimas 3 para debug
+                    for i, row in enumerate(rows[:3]):
+                        log.info(f"📜 [MEMORY] Msg {i+1}: {row[0]} - {row[1][:50]}...")
+                    if len(rows) > 3:
+                        log.info(f"📜 [MEMORY] ... e mais {len(rows) - 3} mensagens")
                 else:
                     log.info(f"📜 [MEMORY] Nenhum histórico anterior (primeira conversa)")
-                    
-                    # Vamos verificar se há ALGUMA mensagem para esta instância
-                    cur.execute(
-                        "SELECT COUNT(*) FROM ai_memory WHERE instance_id = %s",
-                        (instance_id,)
-                    )
-                    total_count = cur.fetchone()[0]
-                    log.info(f"📜 [MEMORY] Total de mensagens para instância {instance_id}: {total_count}")
                 
                 # Inverte para ordem cronológica (mais antiga → mais recente)
                 history = [{"role": r[0], "content": r[1]} for r in reversed(rows)]
