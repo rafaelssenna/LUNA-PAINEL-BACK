@@ -30,6 +30,92 @@ except Exception:
 
 router = APIRouter()
 
+# ============================================================================
+# NOVO: LISTAR CONVERSAS (CHATS)
+# ============================================================================
+
+@router.get("/chats/list")
+async def list_chats(
+    request: Request,
+    _user=Depends(require_active_tenant_soft),
+    ctx=Depends(get_uazapi_ctx),
+):
+    """
+    Lista todas as conversas (chats) de uma instância.
+    
+    Retorna:
+    - chat_id: ID do chat
+    - last_message: Última mensagem recebida
+    - last_timestamp: Timestamp da última mensagem
+    - unread_count: Quantidade de mensagens não lidas (TODO)
+    - contact_name: Nome do contato (buscar via API)
+    """
+    instance_id = _get_instance_id_from_request(request)
+    
+    if not instance_id:
+        raise HTTPException(status_code=400, detail="instance_id não encontrado")
+    
+    try:
+        # Buscar todas as conversas do banco
+        from app.pg import get_pool
+        
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar chats distintos com última mensagem
+                cur.execute("""
+                    SELECT 
+                        m.chat_id,
+                        MAX(m.timestamp) as last_timestamp,
+                        (
+                            SELECT content 
+                            FROM messages m2 
+                            WHERE m2.chat_id = m.chat_id 
+                            AND m2.instance_id = m.instance_id
+                            ORDER BY m2.timestamp DESC 
+                            LIMIT 1
+                        ) as last_message,
+                        (
+                            SELECT from_me 
+                            FROM messages m2 
+                            WHERE m2.chat_id = m.chat_id 
+                            AND m2.instance_id = m.instance_id
+                            ORDER BY m2.timestamp DESC 
+                            LIMIT 1
+                        ) as last_from_me,
+                        COUNT(*) as message_count
+                    FROM messages m
+                    WHERE m.instance_id = %s
+                    GROUP BY m.chat_id
+                    ORDER BY MAX(m.timestamp) DESC
+                    LIMIT 100
+                """, (instance_id,))
+                
+                rows = cur.fetchall()
+                
+                chats = []
+                for row in rows:
+                    chat_id = row[0]
+                    last_timestamp = row[1]
+                    last_message = row[2] or ""
+                    last_from_me = row[3]
+                    message_count = row[4]
+                    
+                    chats.append({
+                        "chat_id": chat_id,
+                        "last_timestamp": int(last_timestamp) if last_timestamp else 0,
+                        "last_message": last_message[:100],  # Prévia
+                        "last_from_me": bool(last_from_me),
+                        "message_count": message_count,
+                        "unread_count": 0,  # TODO: implementar
+                    })
+                
+                return {"items": chats, "total": len(chats)}
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Erro ao listar chats: {str(e)}")
+
+
 # ---------------- util: extrai instance_id do JWT/headers ---------------- #
 def _b64url_to_bytes(s: str) -> bytes:
     import base64
