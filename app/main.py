@@ -29,6 +29,7 @@ from .routes import (
     webhook,  # ✅ agente IA
     instances,  # ✅ gerenciamento de instâncias WhatsApp
     pay_stripe,  # ✅ rotas de pagamento (Stripe)
+    questionnaires,  # ✅ questionários de onboarding
 )
 
 # Auth da instância (UAZAPI): monta /api/auth corretamente a partir de app/auth.py
@@ -164,6 +165,7 @@ app.include_router(media.router,       prefix="/api/media",   tags=["media"])
 app.include_router(lead_status.router, prefix="/api",         tags=["lead-status"])
 app.include_router(billing.router,     prefix="/api/billing", tags=["billing"])
 app.include_router(pay_stripe.router,  prefix="/api/pay/stripe", tags=["stripe"])
+app.include_router(questionnaires.router, prefix="/api/questionnaires", tags=["questionnaires"])
 
 # Healthcheck simples
 @app.get("/healthz")
