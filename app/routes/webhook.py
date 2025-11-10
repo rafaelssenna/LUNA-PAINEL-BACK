@@ -154,30 +154,73 @@ async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
         return None
 
 
-async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
-    """Busca histórico de conversas do banco"""
+async def save_to_ai_memory(instance_id: str, role: str, content: str, metadata: Dict = None):
+    """
+    Salva mensagem na memória da IA (tabela ai_memory).
+    Esta é a FONTE DE VERDADE para o contexto da conversa!
+    
+    Args:
+        instance_id: ID da instância
+        role: 'user' ou 'assistant'
+        content: Conteúdo da mensagem
+        metadata: Dados extras (chat_id, message_id, etc)
+    """
     try:
         pool = get_pool()
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
                     """
+                    INSERT INTO ai_memory 
+                    (instance_id, role, content, timestamp, metadata)
+                    VALUES (%s, %s, %s, NOW(), %s)
+                    """,
+                    (instance_id, role, content, json.dumps(metadata or {}))
+                )
+                conn.commit()
+                log.info(f"💾 [MEMORY] Salvo: {role} - {content[:50]}...")
+    except Exception as e:
+        log.error(f"❌ [MEMORY] Erro ao salvar: {e}")
+
+
+async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
+    """
+    Busca histórico de conversas da MEMÓRIA DA IA (ai_memory).
+    Esta tabela é específica para contexto da IA!
+    """
+    try:
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                # ✅ BUSCA DA TABELA AI_MEMORY (correta!)
+                # Filtra por metadata.chat_id para pegar apenas conversas deste número
+                cur.execute(
+                    """
                     SELECT 
-                        CASE WHEN from_me THEN 'assistant' ELSE 'user' END as role,
+                        role,
                         content,
-                        created_at
-                    FROM messages
-                    WHERE instance_id = %s AND chat_id = %s
-                    ORDER BY created_at DESC
+                        timestamp
+                    FROM ai_memory
+                    WHERE instance_id = %s 
+                      AND (metadata->>'chat_id' = %s OR metadata->>'number' = %s)
+                    ORDER BY timestamp DESC
                     LIMIT %s
                     """,
-                    (instance_id, number, MAX_HISTORY)
+                    (instance_id, number, number, MAX_HISTORY)
                 )
                 rows = cur.fetchall()
-                # Inverte para ordem cronológica
+                
+                if rows:
+                    log.info(f"📜 [MEMORY] Encontradas {len(rows)} mensagens no histórico")
+                else:
+                    log.info(f"📜 [MEMORY] Nenhum histórico anterior (primeira conversa)")
+                
+                # Inverte para ordem cronológica (mais antiga → mais recente)
                 return [{"role": r[0], "content": r[1]} for r in reversed(rows)]
     except Exception as e:
-        log.error(f"Erro ao buscar histórico: {e}")
+        log.error(f"❌ [MEMORY] Erro ao buscar histórico: {e}")
+        import traceback
+        log.error(traceback.format_exc())
         return []
 
 
@@ -357,6 +400,14 @@ async def process_message(instance_id: str, number: str, text: str):
         # Salva mensagem do usuário (SEMPRE, independente de billing)
         await save_message(instance_id, number, text, "in")
         
+        # ✅ SALVA NA MEMÓRIA DA IA (ai_memory)
+        await save_to_ai_memory(
+            instance_id=instance_id,
+            role="user",
+            content=text,
+            metadata={"chat_id": number, "number": number}
+        )
+        
         # ✅ VERIFICAÇÃO DE BILLING: IA só responde se billing ativo
         user_id = config.get("user_id")
         user_email = None
@@ -396,10 +447,9 @@ async def process_message(instance_id: str, number: str, text: str):
                 log.error(f"❌ [BILLING] Erro ao verificar billing: {e}")
                 log.warning(f"⚠️ [BILLING] Permitindo IA por segurança (falha na verificação)")
         
-        # Busca histórico
+        # Busca histórico (já inclui a mensagem atual salva acima)
         history = await get_history(number, instance_id)
-        history.append({"role": "user", "content": text})
-        log.info(f"📜 [IA] Histórico: {len(history)} mensagens")
+        log.info(f"📜 [IA] Histórico: {len(history)} mensagens (incluindo mensagem atual)")
         
         # Chama IA
         log.info(f"🧠 [IA] Chamando OpenAI ({OPENAI_MODEL})...")
@@ -431,6 +481,15 @@ async def process_message(instance_id: str, number: str, text: str):
                         log.info(f"📤 [IA] Enviando: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
                         await send_whatsapp_text(config["host"], config["token"], number, msg)
                         await save_message(instance_id, number, msg, "out")
+                        
+                        # ✅ SALVA RESPOSTA DA IA NA MEMÓRIA
+                        await save_to_ai_memory(
+                            instance_id=instance_id,
+                            role="assistant",
+                            content=msg,
+                            metadata={"chat_id": number, "number": number, "function": "send_text"}
+                        )
+                        
                         log.info(f"✅ [IA] Mensagem enviada com sucesso")
                         await asyncio.sleep(0.5)
                 
@@ -450,6 +509,15 @@ async def process_message(instance_id: str, number: str, text: str):
                         
                         await send_whatsapp_text(config["host"], config["token"], number, menu_text)
                         await save_message(instance_id, number, text, "out")
+                        
+                        # ✅ SALVA MENU NA MEMÓRIA
+                        await save_to_ai_memory(
+                            instance_id=instance_id,
+                            role="assistant",
+                            content=menu_text,
+                            metadata={"chat_id": number, "number": number, "function": "send_menu", "choices": choices}
+                        )
+                        
                         log.info(f"   ✅ send_menu executado: {len(choices)} opções")
                         await asyncio.sleep(0.5)
                 
@@ -469,6 +537,15 @@ async def process_message(instance_id: str, number: str, text: str):
                 log.info(f"📤 [IA] Enviando resposta direta: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
                 await send_whatsapp_text(config["host"], config["token"], number, msg)
                 await save_message(instance_id, number, msg, "out")
+                
+                # ✅ SALVA RESPOSTA DIRETA NA MEMÓRIA
+                await save_to_ai_memory(
+                    instance_id=instance_id,
+                    role="assistant",
+                    content=msg,
+                    metadata={"chat_id": number, "number": number, "function": "direct_response"}
+                )
+                
                 log.info(f"✅ [IA] Mensagem enviada com sucesso")
     
     except Exception as e:
