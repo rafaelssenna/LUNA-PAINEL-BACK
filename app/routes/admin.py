@@ -671,3 +671,94 @@ async def get_activity(admin: Dict = Depends(get_current_admin)):
             }
             for row in rows
         ]
+
+
+@router.get("/questionnaires")
+async def get_questionnaires(admin: Dict = Depends(get_current_admin)):
+    """
+    Lista todos os questionários dos usuários com informações da instância.
+    Útil para o admin configurar a Luna com base nas respostas do cliente.
+    """
+    
+    with get_pool().connection() as conn:
+        rows = conn.execute("""
+            SELECT 
+                q.*,
+                u.email as user_email,
+                i.id as instance_id,
+                i.phone_number,
+                i.status as instance_status,
+                i.admin_status
+            FROM user_questionnaires q
+            JOIN users u ON q.user_id = u.id
+            LEFT JOIN instances i ON i.user_id = u.id
+            ORDER BY q.created_at DESC
+        """).fetchall()
+        
+        return [
+            {
+                "id": row['id'],
+                "user_id": row['user_id'],
+                "user_email": row['user_email'],
+                "instance_id": row['instance_id'],
+                "phone_number": row['phone_number'],
+                "instance_status": row['instance_status'],
+                "admin_status": row['admin_status'],
+                "has_whatsapp_number": row['has_whatsapp_number'],
+                "company_name": row['company_name'],
+                "contact_phone": row['contact_phone'],
+                "contact_email": row['contact_email'],
+                "product_service": row['product_service'],
+                "target_audience": row['target_audience'],
+                "notification_phone": row['notification_phone'],
+                "prospecting_region": row['prospecting_region'],
+                "created_at": row['created_at'].isoformat() if row['created_at'] else None,
+                "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+            }
+            for row in rows
+        ]
+
+
+@router.get("/questionnaires/{user_id}")
+async def get_user_questionnaire(user_id: int, admin: Dict = Depends(get_current_admin)):
+    """
+    Busca o questionário de um usuário específico.
+    """
+    
+    with get_pool().connection() as conn:
+        row = conn.execute("""
+            SELECT 
+                q.*,
+                u.email as user_email,
+                i.id as instance_id,
+                i.phone_number,
+                i.status as instance_status,
+                i.admin_status
+            FROM user_questionnaires q
+            JOIN users u ON q.user_id = u.id
+            LEFT JOIN instances i ON i.user_id = u.id
+            WHERE q.user_id = %s
+        """, (user_id,)).fetchone()
+        
+        if not row:
+            raise HTTPException(status_code=404, detail="Questionário não encontrado")
+        
+        return {
+            "id": row['id'],
+            "user_id": row['user_id'],
+            "user_email": row['user_email'],
+            "instance_id": row['instance_id'],
+            "phone_number": row['phone_number'],
+            "instance_status": row['instance_status'],
+            "admin_status": row['admin_status'],
+            "has_whatsapp_number": row['has_whatsapp_number'],
+            "company_name": row['company_name'],
+            "contact_phone": row['contact_phone'],
+            "contact_email": row['contact_email'],
+            "product_service": row['product_service'],
+            "target_audience": row['target_audience'],
+            "notification_phone": row['notification_phone'],
+            "prospecting_region": row['prospecting_region'],
+            "created_at": row['created_at'].isoformat() if row['created_at'] else None,
+            "updated_at": row['updated_at'].isoformat() if row['updated_at'] else None
+        }
