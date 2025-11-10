@@ -418,13 +418,17 @@ async def process_message(instance_id: str, number: str, text: str):
         # Salva mensagem do usuário (SEMPRE, independente de billing)
         await save_message(instance_id, number, text, "in")
         
-        # ✅ SALVA NA MEMÓRIA DA IA (ai_memory)
+        # ✅ SALVA NA MEMÓRIA DA IA (ai_memory) - CRITICAL!
+        log.info(f"💾 [MEMORY] Salvando mensagem do usuário ANTES de buscar histórico")
         await save_to_ai_memory(
             instance_id=instance_id,
             role="user",
             content=text,
             metadata={"chat_id": number, "number": number}
         )
+        # Pequeno delay para garantir que o banco processou o commit
+        await asyncio.sleep(0.1)
+        log.info(f"💾 [MEMORY] Mensagem do usuário salva! Agora vamos buscar histórico")
         
         # ✅ VERIFICAÇÃO DE BILLING: IA só responde se billing ativo
         user_id = config.get("user_id")
