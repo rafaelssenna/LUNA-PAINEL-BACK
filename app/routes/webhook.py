@@ -224,15 +224,25 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
                 if rows:
                     log.info(f"📜 [MEMORY] ✅ Encontradas {len(rows)} mensagens no histórico")
                     # Mostra as últimas 3 para debug
-                    for i, row in enumerate(rows[:3]):
-                        log.info(f"📜 [MEMORY] Msg {i+1}: {row[0]} - {row[1][:50]}...")
-                    if len(rows) > 3:
-                        log.info(f"📜 [MEMORY] ... e mais {len(rows) - 3} mensagens")
+                    try:
+                        for i, row in enumerate(rows[:3]):
+                            # Converte row para lista para acesso seguro
+                            row_data = list(row) if not isinstance(row, (list, tuple)) else row
+                            log.info(f"📜 [MEMORY] Msg {i+1}: {row_data[0]} - {row_data[1][:50]}...")
+                        if len(rows) > 3:
+                            log.info(f"📜 [MEMORY] ... e mais {len(rows) - 3} mensagens")
+                    except Exception as e:
+                        log.warning(f"⚠️ [MEMORY] Erro ao exibir preview: {e}")
                 else:
                     log.info(f"📜 [MEMORY] Nenhum histórico anterior (primeira conversa)")
                 
                 # Inverte para ordem cronológica (mais antiga → mais recente)
-                history = [{"role": r[0], "content": r[1]} for r in reversed(rows)]
+                # Converte cada row para garantir acesso por índice
+                history = []
+                for r in reversed(rows):
+                    row_data = list(r) if not isinstance(r, (list, tuple)) else r
+                    history.append({"role": row_data[0], "content": row_data[1]})
+                
                 log.info(f"📜 [MEMORY] RETORNANDO {len(history)} mensagens para IA")
                 return history
     except Exception as e:
