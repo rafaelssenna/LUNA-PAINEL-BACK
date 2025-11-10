@@ -367,6 +367,28 @@ def init_schema():
         ALTER TABLE users ADD COLUMN full_name TEXT;
       END IF;
     END$$;
+    
+    -- =========================================
+    -- QUESTIONNAIRES (Questionários de onboarding)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS user_questionnaires (
+      id                    SERIAL PRIMARY KEY,
+      user_id               INTEGER NOT NULL REFERENCES users(id),
+      has_whatsapp_number   BOOLEAN NOT NULL,
+      company_name          TEXT NOT NULL,
+      contact_phone         TEXT NOT NULL,
+      contact_email         TEXT NOT NULL,
+      product_service       TEXT NOT NULL,
+      target_audience       TEXT NOT NULL,
+      notification_phone    TEXT NOT NULL,
+      prospecting_region    TEXT NOT NULL,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      UNIQUE(user_id)
+    );
+    
+    CREATE INDEX IF NOT EXISTS idx_questionnaires_user_id ON user_questionnaires(user_id);
+    CREATE INDEX IF NOT EXISTS idx_questionnaires_created ON user_questionnaires(created_at DESC);
     """
     with get_pool().connection() as con:
         con.execute(sql)
