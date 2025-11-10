@@ -354,8 +354,47 @@ async def process_message(instance_id: str, number: str, text: str):
             log.warning(f"⚠️ [IA] WhatsApp desconectado (status: {config['status']})")
             return
         
-        # Salva mensagem do usuário
+        # Salva mensagem do usuário (SEMPRE, independente de billing)
         await save_message(instance_id, number, text, "in")
+        
+        # ✅ VERIFICAÇÃO DE BILLING: IA só responde se billing ativo
+        user_id = config.get("user_id")
+        user_email = None
+        
+        if user_id:
+            # Buscar email do usuário
+            try:
+                pool = get_pool()
+                with pool.connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+                        row = cur.fetchone()
+                        if row:
+                            user_email = row[0]
+            except Exception as e:
+                log.error(f"❌ [BILLING] Erro ao buscar email do usuário: {e}")
+        
+        if user_email:
+            # Importar função de billing
+            try:
+                from app.services.billing import is_billing_active, canonical_email_key
+                
+                billing_key = canonical_email_key(user_email)
+                billing_active = await is_billing_active(billing_key)
+                
+                if not billing_active:
+                    log.warning(f"⚠️ [BILLING] Trial expirado ou sem pagamento para {user_email}")
+                    log.warning(f"⚠️ [BILLING] Mensagem salva, mas IA NÃO responderá")
+                    log.warning(f"⚠️ [BILLING] Instância: {instance_id}")
+                    # Mensagem foi salva, mas IA não processa
+                    return
+                
+                log.info(f"✅ [BILLING] Billing ativo para {user_email} - IA processa normalmente")
+            
+            except Exception as e:
+                # Se falhar verificação, permite por segurança
+                log.error(f"❌ [BILLING] Erro ao verificar billing: {e}")
+                log.warning(f"⚠️ [BILLING] Permitindo IA por segurança (falha na verificação)")
         
         # Busca histórico
         history = await get_history(number, instance_id)
