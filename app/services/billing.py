@@ -43,6 +43,32 @@ def canonical_email_key(email: str) -> str:
     return f"email:{e}"
 
 
+def canonical_billing_key(billing_key: str) -> str:
+    """
+    Normaliza qualquer chave de billing (email OU instance_id) para o formato correto.
+    
+    Entrada:
+    - "usuario@exemplo.com" -> "email:usuario@exemplo.com"
+    - "email:usuario@exemplo.com" -> "email:usuario@exemplo.com"
+    - "inst_123" -> "iid:inst_123"
+    - "iid:inst_123" -> "iid:inst_123"
+    
+    Prioriza email (se contém @) senão trata como instance_id.
+    """
+    s = (billing_key or "").strip()
+    
+    # Já está no formato correto
+    if s.startswith("email:") or s.startswith("iid:"):
+        return s
+    
+    # É um email (contém @)
+    if "@" in s:
+        return canonical_email_key(s)
+    
+    # É instance_id
+    return canonical_instance_key(s)
+
+
 def make_billing_key(token: str, host: str, instance_id: Optional[str]) -> str:
     """
     Preferimos billing por INSTÂNCIA:
@@ -69,7 +95,7 @@ def ensure_trial(billing_key: str) -> Dict[str, Any]:
     Garante que exista um registro e que o trial esteja iniciado (idempotente).
     Retorna um snapshot básico do registro.
     """
-    bkey = canonical_instance_key(billing_key)
+    bkey = canonical_billing_key(billing_key)
     trial_ends = _utcnow() + timedelta(days=TRIAL_DAYS)
 
     with get_pool().connection() as conn:
@@ -131,7 +157,8 @@ def get_status(billing_key: str) -> Dict[str, Any]:
       - Trial ativo:  trial_ends_at > now().
       - Caso contrário: inactive.
     """
-    bkey = canonical_instance_key(billing_key)
+    # ✅ CORRIGIDO: Aceita email OU instance_id
+    bkey = canonical_billing_key(billing_key)
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -214,7 +241,8 @@ def mark_paid(
     Avança/define paid_until por N dias a partir do maior entre agora e o paid_until atual.
     Atualiza também plan e last_payment_status.
     """
-    bkey = canonical_instance_key(billing_key)
+    # ✅ CORRIGIDO: Aceita email OU instance_id
+    bkey = canonical_billing_key(billing_key)
     now = _utcnow()
     add_days = max(1, int(days))
 
@@ -264,9 +292,10 @@ def mark_status(
 ) -> None:
     """
     Atualiza apenas o last_payment_status (e opcionalmente o plan), sem mexer no paid_until.
-    Útil para refletir 'failed', 'canceled' etc. em /billing/status.
+    Útil para marcar falhas (status='failed') ou outros estados temporários.
     """
-    bkey = canonical_instance_key(billing_key)
+    # ✅ CORRIGIDO: Aceita email OU instance_id
+    bkey = canonical_billing_key(billing_key)
 
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -288,3 +317,25 @@ def mark_status(
                 """,
                 (status, plan, bkey),
             )
+
+
+async def is_billing_active(billing_key: str) -> bool:
+    """
+    Verifica se o billing está ativo (trial ou pagamento).
+    Retorna True se:
+      - Trial ainda está ativo (trial_ends_at > now), OU
+      - Pagamento ativo (paid_until > now), OU
+      - Vitalício (last_payment_status='paid' e paid_until IS NULL)
+    
+    Args:
+        billing_key: Chave de billing (formato: email:user@example.com ou iid:instance_id)
+    
+    Returns:
+        bool: True se billing está ativo, False caso contrário
+    """
+    try:
+        status = get_status(billing_key)
+        return status.get("active", False)
+    except Exception:
+        # Em caso de erro, retorna False para não bloquear
+        return False
