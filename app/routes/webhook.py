@@ -226,9 +226,8 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
                     # Mostra as últimas 3 para debug
                     try:
                         for i, row in enumerate(rows[:3]):
-                            # Converte row para lista para acesso seguro
-                            row_data = list(row) if not isinstance(row, (list, tuple)) else row
-                            log.info(f"📜 [MEMORY] Msg {i+1}: {row_data[0]} - {row_data[1][:50]}...")
+                            # row é um dict (row_factory=dict_row)
+                            log.info(f"📜 [MEMORY] Msg {i+1}: {row['role']} - {row['content'][:50]}...")
                         if len(rows) > 3:
                             log.info(f"📜 [MEMORY] ... e mais {len(rows) - 3} mensagens")
                     except Exception as e:
@@ -237,11 +236,10 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
                     log.info(f"📜 [MEMORY] Nenhum histórico anterior (primeira conversa)")
                 
                 # Inverte para ordem cronológica (mais antiga → mais recente)
-                # Converte cada row para garantir acesso por índice
+                # row é dict, acessa diretamente pelas chaves
                 history = []
                 for r in reversed(rows):
-                    row_data = list(r) if not isinstance(r, (list, tuple)) else r
-                    history.append({"role": row_data[0], "content": row_data[1]})
+                    history.append({"role": r["role"], "content": r["content"]})
                 
                 log.info(f"📜 [MEMORY] RETORNANDO {len(history)} mensagens para IA")
                 return history
