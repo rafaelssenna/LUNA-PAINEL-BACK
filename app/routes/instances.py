@@ -522,16 +522,32 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
     
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(
-                """
-                SELECT id, status, admin_status, phone_number, prompt, redirect_phone, token, host
-                FROM instances
-                WHERE user_id = %s
-                ORDER BY created_at DESC
-                LIMIT 1
-                """,
-                (user_id,)
-            )
+            # Tentar buscar token e host, mas não falhar se não existirem
+            try:
+                cur.execute(
+                    """
+                    SELECT id, status, admin_status, phone_number, prompt, redirect_phone, token, host
+                    FROM instances
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,)
+                )
+            except Exception as e:
+                # Se campos token/host não existem, buscar sem eles
+                print(f"[STATUS] Campos token/host não existem, buscando sem eles: {e}")
+                cur.execute(
+                    """
+                    SELECT id, status, admin_status, phone_number, prompt, redirect_phone
+                    FROM instances
+                    WHERE user_id = %s
+                    ORDER BY created_at DESC
+                    LIMIT 1
+                    """,
+                    (user_id,)
+                )
+            
             row = cur.fetchone()
             
             if not row:
@@ -545,20 +561,29 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
             phone_number = row["phone_number"]
             has_prompt = bool(row["prompt"])
             has_redirect = bool(row["redirect_phone"])
-            instance_token = row.get("token", "")
-            instance_host = row.get("host", os.getenv("UAZAPI_HOST", ""))
             
-            # 🔥 NOVO: Verificar status REAL na UAZAPI
+            # Tentar pegar token e host se existirem
+            instance_token = row.get("token", "") if "token" in row else ""
+            instance_host = row.get("host", "") if "host" in row else ""
+            
+            # Se não tem host, usar variável de ambiente
+            if not instance_host:
+                instance_host = os.getenv("UAZAPI_HOST", "")
+            
+            # 🔥 NOVO: Verificar status REAL na UAZAPI (apenas se tiver token e host)
             real_status = instance_status  # Fallback para status do banco
             if instance_token and instance_host:
                 try:
+                    print(f"[STATUS] Verificando UAZAPI: {instance_host}/instance/status")
                     async with httpx.AsyncClient(timeout=5.0) as client:
                         response = await client.get(
                             f"{instance_host}/instance/status",
                             headers={"token": instance_token}
                         )
+                        print(f"[STATUS] UAZAPI response status: {response.status_code}")
                         if response.status_code == 200:
                             uazapi_data = response.json()
+                            print(f"[STATUS] UAZAPI data: {uazapi_data}")
                             # Atualizar status real da UAZAPI
                             if uazapi_data.get("status") == "connected":
                                 real_status = "connected"
@@ -576,6 +601,8 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                 except Exception as e:
                     print(f"[STATUS] Erro ao verificar UAZAPI: {e}")
                     # Manter status do banco em caso de erro
+            else:
+                print(f"[STATUS] Sem token/host, usando status do banco: {instance_status}")
             
             # Usar status real (da UAZAPI) ao invés do banco
             instance_status = real_status
