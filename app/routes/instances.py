@@ -7,6 +7,7 @@ from datetime import datetime
 import logging
 import os
 import uuid
+import httpx
 
 from fastapi import APIRouter, HTTPException, Request, Depends
 from pydantic import BaseModel
@@ -523,7 +524,7 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
         with conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, status, admin_status, phone_number, prompt, redirect_phone
+                SELECT id, status, admin_status, phone_number, prompt, redirect_phone, token, host
                 FROM instances
                 WHERE user_id = %s
                 ORDER BY created_at DESC
@@ -544,6 +545,40 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
             phone_number = row["phone_number"]
             has_prompt = bool(row["prompt"])
             has_redirect = bool(row["redirect_phone"])
+            instance_token = row.get("token", "")
+            instance_host = row.get("host", os.getenv("UAZAPI_HOST", ""))
+            
+            # 🔥 NOVO: Verificar status REAL na UAZAPI
+            real_status = instance_status  # Fallback para status do banco
+            if instance_token and instance_host:
+                try:
+                    async with httpx.AsyncClient(timeout=5.0) as client:
+                        response = await client.get(
+                            f"{instance_host}/instance/status",
+                            headers={"token": instance_token}
+                        )
+                        if response.status_code == 200:
+                            uazapi_data = response.json()
+                            # Atualizar status real da UAZAPI
+                            if uazapi_data.get("status") == "connected":
+                                real_status = "connected"
+                            else:
+                                real_status = "disconnected"
+                            
+                            # Atualizar no banco se mudou
+                            if real_status != instance_status:
+                                cur.execute(
+                                    "UPDATE instances SET status = %s WHERE id = %s",
+                                    (real_status, row["id"])
+                                )
+                                conn.commit()
+                                print(f"[STATUS] Instância {row['id']} atualizada: {instance_status} -> {real_status}")
+                except Exception as e:
+                    print(f"[STATUS] Erro ao verificar UAZAPI: {e}")
+                    # Manter status do banco em caso de erro
+            
+            # Usar status real (da UAZAPI) ao invés do banco
+            instance_status = real_status
             
             # Determinar mensagem baseada no status
             if instance_status != "connected":
