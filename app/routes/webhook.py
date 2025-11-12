@@ -492,17 +492,36 @@ async def process_message(instance_id: str, number: str, text: str):
         log.info(f"✅ [IA] OpenAI respondeu")
         
         # Processa tool calls (igual TypeScript - processa TODAS em sequência)
+        #
+        # Quando a IA retorna múltiplas chamadas de função (tool_calls), a ordem
+        # original pode colocar um handoff antes de um send_text ou send_menu.
+        # Isso resulta em o lead ser encaminhado para atendimento humano antes de
+        # receber a resposta automática, o que causa a sensação de que a IA não
+        # respondeu. Para garantir que as mensagens sejam enviadas antes do
+        # encaminhamento, reordenamos as chamadas: primeiro enviamos todos os
+        # textos e menus, por último executamos o handoff, se houver.
         tool_calls = response.get("tool_calls", [])
         if tool_calls:
             log.info(f"🤖 [IA] {len(tool_calls)} função(ões) detectada(s)")
-            
+
+            # Separar chamadas em dois grupos: não-handoff e handoff
+            non_handoff_calls = []
+            handoff_calls = []
             for call in tool_calls:
+                # Ignorar qualquer item que não seja uma chamada de função
                 if call.type != "function":
                     continue
-                
+                if call.function.name == "handoff":
+                    handoff_calls.append(call)
+                else:
+                    non_handoff_calls.append(call)
+
+            # Processar primeiro textos e menus, depois handoff
+            ordered_calls = non_handoff_calls + handoff_calls
+            
+            for call in ordered_calls:
                 func_name = call.function.name
-                func_args = json.loads(call.function.arguments)
-                
+                func_args = json.loads(call.function.arguments or "{}")
                 log.info(f"   🔧 Executando: {func_name}")
                 
                 if func_name == "send_text":
@@ -525,20 +544,21 @@ async def process_message(instance_id: str, number: str, text: str):
                 
                 elif func_name == "send_menu":
                     # Menu com botões (igual TypeScript)
-                    text = func_args.get("text", "")
+                    menu_question = func_args.get("text", "")
                     choices = func_args.get("choices", ["sim", "nao"])
                     footer = func_args.get("footerText", "Escolha uma opção")
                     
-                    if text:
+                    if menu_question:
                         # Por enquanto, envia como texto simples
                         # TODO: Implementar botões nativos da UAZAPI
-                        menu_text = f"{text}\n\n"
+                        menu_text = f"{menu_question}\n\n"
                         for i, choice in enumerate(choices, 1):
                             menu_text += f"{i}. {choice.upper()}\n"
                         menu_text += f"\n{footer}"
                         
                         await send_whatsapp_text(config["host"], config["token"], number, menu_text)
-                        await save_message(instance_id, number, text, "out")
+                        # Salva a PERGUNTA no histórico (não o texto formatado) para manter contexto
+                        await save_message(instance_id, number, menu_question, "out")
                         
                         # ✅ SALVA MENU NA MEMÓRIA
                         await save_to_ai_memory(
@@ -556,6 +576,7 @@ async def process_message(instance_id: str, number: str, text: str):
                     await handoff_to_human(number, config["host"], config["token"], config.get("redirect_phone", ""))
                     await save_message(instance_id, number, "[handoff]", "out")
                     log.info(f"   ✅ handoff executado")
+                    # Evita delay adicional após último handoff
                 
                 else:
                     log.warning(f"   ❌ Função desconhecida: {func_name}")
