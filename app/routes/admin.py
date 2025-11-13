@@ -7,14 +7,15 @@ import os
 import jwt
 import bcrypt
 import json
+import csv
+import io
+import re
 
-from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File, BackgroundTasks
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File
 from pydantic import BaseModel, EmailStr
 
 from app.pg import get_pool
 from app.services import uazapi
-from app.services import loop as loop_service
 
 router = APIRouter()
 log = logging.getLogger("uvicorn.error")
@@ -22,6 +23,7 @@ log = logging.getLogger("uvicorn.error")
 JWT_SECRET = os.getenv("LUNA_JWT_SECRET") or os.getenv("JWT_SECRET") or "change-me"
 JWT_ALG = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_TTL_SECONDS = 86400  # 24 horas para admin
+DEFAULT_DAILY_LIMIT = 30
 
 # ==============================================================================
 # MODELOS
@@ -41,20 +43,64 @@ class ConfigureInstanceIn(BaseModel):
     redirect_phone: str = ""  # ✅ Número para handoff específico dessa Luna
 
 
-class LoopSettingsIn(BaseModel):
-    auto_run: Optional[bool] = None
-    ia_auto: Optional[bool] = None
-    daily_limit: Optional[int] = None
+class ContactIn(BaseModel):
+    name: str
+    phone: str
+    niche: Optional[str] = None
+    region: Optional[str] = None
+
+
+class QueueActionIn(BaseModel):
+    mark_sent: bool = False
+
+
+class AutomationSettingsIn(BaseModel):
+    daily_limit: int = 30
+    auto_run: bool = False
+    ia_auto: bool = False
     message_template: Optional[str] = None
-    window_start: Optional[str] = None
-    window_end: Optional[str] = None
+
+# ==============================================================================
+# HELPERS
+# ==============================================================================
+
+PHONE_DIGITS_ONLY = re.compile(r"\D+")
 
 
-class PaginationQuery(BaseModel):
-    page: int = 1
-    page_size: int = 50
-    search: Optional[str] = None
-    status: Optional[str] = None
+def _normalize_phone(value: Optional[str]) -> str:
+    if not value:
+        return ""
+    digits = PHONE_DIGITS_ONLY.sub("", value)
+    if digits.startswith("55") and len(digits) > 13:
+        digits = digits[:13]
+    return digits
+
+
+def _validate_phone_or_raise(phone: str):
+    digits = _normalize_phone(phone)
+    if len(digits) < 10:
+        raise HTTPException(status_code=400, detail="Telefone inválido")
+    return digits
+
+
+def _ensure_instance_exists(conn, instance_id: str):
+    with conn.cursor() as cur:
+        cur.execute("SELECT id, user_id FROM instances WHERE id = %s", (instance_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Instância não encontrada")
+        return row
+
+
+def _log_admin_action(conn, admin_id: int, action: str, instance_id: str, description: str):
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description)
+            VALUES (%s, %s, 'instance', %s, %s)
+            """,
+            (admin_id, action, instance_id, description),
+        )
 
 # ==============================================================================
 # AUTENTICAÇÃO ADMIN
@@ -769,98 +815,405 @@ async def delete_instance(
     return {"ok": True, "message": "Instância deletada com sucesso"}
 
 
-def _parse_pagination_query(page: Optional[int], page_size: Optional[int], search: Optional[str], status: Optional[str]):
-    page = max(page or 1, 1)
-    page_size = max(min(page_size or 50, 200), 1)
-    search = search.strip() if search else None
-    status = status.strip() if status else None
-    return page, page_size, search, status
+# ============================================================================== 
+# AUTOMAÇÃO POR INSTÂNCIA (Fila, Totais, Contatos, CSV, Progresso)
+# ==============================================================================
 
 
-@router.get("/instances/{instance_id}/loop/settings")
-async def get_loop_settings(instance_id: str, admin: Dict = Depends(get_current_admin)):
-    return loop_service.get_loop_settings(instance_id)
+def _resolve_instance_id(instance_id: Optional[str], conn) -> str:
+    if instance_id:
+        return instance_id
+
+    with conn.cursor() as cur:
+        cur.execute(
+            """
+            SELECT id
+              FROM instances
+             WHERE admin_status = 'active'
+             ORDER BY created_at ASC
+             LIMIT 1
+            """
+        )
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Nenhuma instância ativa encontrada")
+        return row[0]
 
 
-@router.put("/instances/{instance_id}/loop/settings")
-async def update_loop_settings_endpoint(
-    instance_id: str,
-    payload: LoopSettingsIn,
-    admin: Dict = Depends(get_current_admin)
-):
-    return loop_service.update_loop_settings(instance_id, payload.model_dump(exclude_none=True))
-
-
-@router.get("/instances/{instance_id}/loop/state")
-async def get_loop_state(instance_id: str, admin: Dict = Depends(get_current_admin)):
-    return loop_service.get_loop_state(instance_id)
-
-
-@router.post("/instances/{instance_id}/loop/start")
-async def start_loop(instance_id: str, admin: Dict = Depends(get_current_admin)):
-    admin_id = int(str(admin.get("sub", "")).split(":")[-1]) if admin.get("sub") else None
-    return await loop_service.request_loop_start(instance_id, admin_id=admin_id)
-
-
-@router.post("/instances/{instance_id}/loop/stop")
-async def stop_loop(instance_id: str, admin: Dict = Depends(get_current_admin)):
-    return await loop_service.request_loop_stop(instance_id)
-
-
-@router.get("/instances/{instance_id}/loop/progress")
-async def stream_loop_progress(instance_id: str, admin: Dict = Depends(get_current_admin)):
-    async def event_stream():
-        async for chunk in loop_service.stream_progress(instance_id):
-            yield chunk
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
-
-
-@router.get("/instances/{instance_id}/loop/queue")
-async def list_loop_queue(
-    instance_id: str,
+@router.get("/instances/{instance_id}/queue")
+async def get_instance_queue(
+    instance_id: Optional[str] = None,
     page: int = 1,
-    page_size: int = 50,
+    page_size: int = 25,
     search: Optional[str] = None,
     admin: Dict = Depends(get_current_admin)
 ):
-    page, page_size, search, _ = _parse_pagination_query(page, page_size, search, None)
-    return loop_service.list_queue(instance_id, page=page, page_size=page_size, search=search)
+    if page < 1 or page_size < 1:
+        raise HTTPException(status_code=400, detail="Paginação inválida")
+
+    with get_pool().connection() as conn:
+        resolved_id = _resolve_instance_id(instance_id, conn)
+
+        _ensure_instance_exists(conn, resolved_id)
+
+        params: List[Any] = [resolved_id]
+        where_clause = ""
+        if search:
+            search = f"%{search.lower()}%"
+            params.extend([search, search])
+            where_clause = " AND (LOWER(name) LIKE %s OR phone LIKE %s)"
+
+        offset = (page - 1) * page_size
+        params.extend([page_size, offset])
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT phone, name, niche, region, created_at
+                  FROM instance_queue
+                 WHERE instance_id = %s {where_clause}
+                 ORDER BY created_at ASC
+                 LIMIT %s OFFSET %s
+                """,
+                params,
+            )
+            rows = cur.fetchall()
+
+            count_params = params[:1]
+            if search:
+                count_params.extend(params[1:3])
+
+            cur.execute(
+                f"""
+                SELECT COUNT(*)
+                  FROM instance_queue
+                 WHERE instance_id = %s {where_clause}
+                """,
+                count_params,
+            )
+            total = cur.fetchone()[0]
+
+        items = [
+            {
+                "phone": row[0],
+                "name": row[1],
+                "niche": row[2],
+                "region": row[3],
+                "created_at": row[4].isoformat() if row[4] else None,
+            }
+            for row in rows
+        ]
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "instance_id": resolved_id,
+    }
 
 
-@router.get("/instances/{instance_id}/loop/totals")
-async def list_loop_totals(
+@router.delete("/instances/{instance_id}/queue/{phone}")
+async def queue_remove_or_mark(
     instance_id: str,
+    phone: str,
+    payload: QueueActionIn,
+    admin: Dict = Depends(get_current_admin)
+):
+    digits = _validate_phone_or_raise(phone)
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM instance_queue WHERE instance_id = %s AND phone = %s",
+                (instance_id, digits),
+            )
+
+            if payload.mark_sent:
+                cur.execute(
+                    """
+                    UPDATE instance_totals
+                       SET mensagem_enviada = TRUE, updated_at = NOW()
+                     WHERE instance_id = %s AND phone = %s
+                    """,
+                    (instance_id, digits),
+                )
+
+    return {"ok": True}
+
+
+@router.post("/instances/{instance_id}/queue/{phone}/mark-sent")
+async def queue_mark_sent(
+    instance_id: str,
+    phone: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    return await queue_remove_or_mark(instance_id, phone, QueueActionIn(mark_sent=True), admin)
+
+
+@router.get("/instances/{instance_id}/totals")
+async def get_instance_totals(
+    instance_id: Optional[str] = None,
     page: int = 1,
-    page_size: int = 50,
+    page_size: int = 25,
     search: Optional[str] = None,
-    status: Optional[str] = None,
+    sent: Optional[str] = None,
     admin: Dict = Depends(get_current_admin)
 ):
-    page, page_size, search, status = _parse_pagination_query(page, page_size, search, status)
-    return loop_service.list_totals(instance_id, page=page, page_size=page_size, search=search, status=status)
+    if page < 1 or page_size < 1:
+        raise HTTPException(status_code=400, detail="Paginação inválida")
+
+    with get_pool().connection() as conn:
+        resolved_id = _resolve_instance_id(instance_id, conn)
+        _ensure_instance_exists(conn, resolved_id)
+
+        where = ["instance_id = %s"]
+        params: List[Any] = [resolved_id]
+
+        if search:
+            search = f"%{search.lower()}%"
+            where.append("(LOWER(name) LIKE %s OR phone LIKE %s OR COALESCE(niche, '') ILIKE %s)")
+            params.extend([search, search, search])
+
+        if sent == "sim":
+            where.append("mensagem_enviada = TRUE")
+        elif sent == "nao":
+            where.append("mensagem_enviada = FALSE")
+
+        where_clause = " AND ".join(where)
+        offset = (page - 1) * page_size
+
+        with conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT phone, name, niche, region, mensagem_enviada, updated_at
+                  FROM instance_totals
+                 WHERE {where_clause}
+                 ORDER BY updated_at DESC
+                 LIMIT %s OFFSET %s
+                """,
+                (*params, page_size, offset),
+            )
+            rows = cur.fetchall()
+
+            cur.execute(
+                f"SELECT COUNT(*) FROM instance_totals WHERE {where_clause}",
+                params,
+            )
+            total = cur.fetchone()[0]
+
+    items = [
+        {
+            "phone": row[0],
+            "name": row[1],
+            "niche": row[2],
+            "region": row[3],
+            "mensagem_enviada": row[4],
+            "updated_at": row[5].isoformat() if row[5] else None,
+        }
+        for row in rows
+    ]
+
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "instance_id": resolved_id,
+    }
 
 
-@router.post("/instances/{instance_id}/loop/contacts")
-async def add_loop_contact(
+@router.post("/instances/{instance_id}/contacts")
+async def add_contact_to_instance(
     instance_id: str,
-    body: Dict[str, Any],
+    payload: ContactIn,
     admin: Dict = Depends(get_current_admin)
 ):
-    name = body.get("name")
-    phone = body.get("phone")
-    niche = body.get("niche")
-    return loop_service.add_contact(instance_id, name, phone, niche)
+    digits = _validate_phone_or_raise(payload.phone)
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO instance_totals (instance_id, phone, name, niche, region, mensagem_enviada, updated_at)
+                VALUES (%s, %s, %s, %s, %s, FALSE, NOW())
+                ON CONFLICT (instance_id, phone)
+                DO UPDATE SET
+                    name = COALESCE(EXCLUDED.name, instance_totals.name),
+                    niche = COALESCE(EXCLUDED.niche, instance_totals.niche),
+                    region = COALESCE(EXCLUDED.region, instance_totals.region),
+                    mensagem_enviada = instance_totals.mensagem_enviada,
+                    updated_at = NOW()
+                RETURNING mensagem_enviada
+                """,
+                (instance_id, digits, payload.name, payload.niche, payload.region),
+            )
+            already_sent = cur.fetchone()[0]
+
+            if already_sent:
+                status = "skipped_already_sent"
+            else:
+                cur.execute(
+                    """
+                    INSERT INTO instance_queue (instance_id, phone, name, niche, region, created_at)
+                    VALUES (%s, %s, %s, %s, %s, NOW())
+                    ON CONFLICT (instance_id, phone)
+                    DO NOTHING
+                    """,
+                    (instance_id, digits, payload.name, payload.niche, payload.region),
+                )
+                status = "inserted" if cur.rowcount > 0 else "skipped_conflict"
+
+    return {"status": status}
 
 
-@router.post("/instances/{instance_id}/loop/import")
-async def import_loop_contacts(
+@router.post("/instances/{instance_id}/import")
+async def import_contacts_csv(
     instance_id: str,
     file: UploadFile = File(...),
     admin: Dict = Depends(get_current_admin)
 ):
+    if not file.filename.lower().endswith((".csv", ".txt")):
+        raise HTTPException(status_code=400, detail="Envie um arquivo CSV")
+
     content = await file.read()
-    return loop_service.import_contacts_from_csv(instance_id, content)
+    try:
+        text = content.decode("utf-8")
+    except UnicodeDecodeError:
+        text = content.decode("latin-1")
+
+    reader = csv.DictReader(io.StringIO(text))
+
+    inserted = skipped = errors = 0
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        for row in reader:
+            phone = row.get("phone") or row.get("telefone") or ""
+            name = row.get("name") or row.get("nome") or phone
+            niche = row.get("niche") or row.get("nicho")
+            region = row.get("region") or row.get("regiao")
+
+            if not phone:
+                skipped += 1
+                continue
+
+            try:
+                await add_contact_to_instance(
+                    instance_id,
+                    ContactIn(name=name, phone=phone, niche=niche, region=region),
+                    admin,
+                )
+                inserted += 1
+            except HTTPException as exc:
+                if exc.status_code == 400:
+                    skipped += 1
+                else:
+                    errors += 1
+
+    return {"inserted": inserted, "skipped": skipped, "errors": errors}
+
+
+@router.get("/instances/{instance_id}/progress")
+async def get_instance_progress(
+    instance_id: Optional[str] = None,
+    admin: Dict = Depends(get_current_admin)
+):
+    with get_pool().connection() as conn:
+        resolved_id = _resolve_instance_id(instance_id, conn)
+        _ensure_instance_exists(conn, resolved_id)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT
+                    COUNT(*) FILTER (WHERE mensagem_enviada = TRUE) AS enviados,
+                    COUNT(*) FILTER (WHERE mensagem_enviada = FALSE) AS pendentes
+                  FROM instance_totals
+                 WHERE instance_id = %s
+                """,
+                (resolved_id,),
+            )
+            row = cur.fetchone() or (0, 0)
+
+            cur.execute(
+                """
+                SELECT SUM(CASE WHEN mensagem_enviada THEN 1 ELSE 0 END) AS sent_today
+                  FROM instance_totals
+                 WHERE instance_id = %s AND mensagem_enviada = TRUE AND updated_at::date = CURRENT_DATE
+                """,
+                (resolved_id,),
+            )
+            sent_today = cur.fetchone()[0] or 0
+
+            cur.execute(
+                "SELECT daily_limit, auto_run, ia_auto, message_template FROM instance_settings WHERE instance_id = %s",
+                (resolved_id,),
+            )
+            settings = cur.fetchone()
+
+    total_enviados = row[0] if row else 0
+    pendentes = row[1] if row else 0
+    daily_limit = settings[0] if settings else DEFAULT_DAILY_LIMIT
+
+    remaining = max(0, daily_limit - sent_today)
+    pct = min(100, int((sent_today / daily_limit) * 100)) if daily_limit > 0 else 0
+
+    return {
+        "instance_id": resolved_id,
+        "enviados": total_enviados,
+        "pendentes": pendentes,
+        "sent_today": sent_today,
+        "daily_limit": daily_limit,
+        "remaining": remaining,
+        "percentage": pct,
+        "auto_run": settings[1] if settings else False,
+        "ia_auto": settings[2] if settings else False,
+        "message_template": settings[3] if settings else "",
+        "now": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+@router.post("/instances/{instance_id}/settings")
+async def update_instance_settings(
+    instance_id: str,
+    payload: AutomationSettingsIn,
+    admin: Dict = Depends(get_current_admin)
+):
+    if payload.daily_limit <= 0:
+        raise HTTPException(status_code=400, detail="daily_limit deve ser maior que zero")
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO instance_settings (instance_id, daily_limit, auto_run, ia_auto, message_template, updated_at)
+                VALUES (%s, %s, %s, %s, %s, NOW())
+                ON CONFLICT (instance_id)
+                DO UPDATE SET
+                    daily_limit = EXCLUDED.daily_limit,
+                    auto_run = EXCLUDED.auto_run,
+                    ia_auto = EXCLUDED.ia_auto,
+                    message_template = EXCLUDED.message_template,
+                    updated_at = NOW()
+                """,
+                (
+                    instance_id,
+                    payload.daily_limit,
+                    payload.auto_run,
+                    payload.ia_auto,
+                    payload.message_template or None,
+                ),
+            )
+
+    return {"ok": True}
 
 
 @router.get("/activity")
