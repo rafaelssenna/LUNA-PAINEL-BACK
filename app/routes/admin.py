@@ -684,6 +684,73 @@ async def clear_instance_memory(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+@router.delete("/instances/{instance_id}")
+async def delete_instance(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Remove definitivamente uma instância e dados relacionados."""
+
+    try:
+        admin_id = int(admin['sub'].split(':')[1])
+    except (KeyError, ValueError, IndexError):
+        raise HTTPException(status_code=401, detail="Admin inválido no token")
+
+    # Buscar dados da instância
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, user_id, uazapi_token, token, phone_number
+                FROM instances
+                WHERE id = %s
+                """,
+                (instance_id,)
+            )
+            instance = cur.fetchone()
+
+            if not instance:
+                raise HTTPException(status_code=404, detail="Instância não encontrada")
+
+            instance_user_id = instance["user_id"]
+            instance_phone = instance.get("phone_number")
+            instance_token = instance.get("uazapi_token") or instance.get("token")
+
+    # Remover na UAZAPI
+    if instance_token:
+        try:
+            await uazapi.delete_instance(instance_id, instance_token)
+            log.info(f"🗑️ [ADMIN] Instância {instance_id} removida na UAZAPI")
+        except uazapi.UazapiError as e:
+            log.warning(f"⚠️ [ADMIN] Falha ao remover instância {instance_id} na UAZAPI: {e}")
+    else:
+        log.warning(f"⚠️ [ADMIN] Instância {instance_id} sem token para remoção na UAZAPI")
+
+    # Remover dados locais
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM messages WHERE instance_id = %s", (instance_id,))
+            cur.execute("DELETE FROM sessions WHERE instance_id = %s", (instance_id,))
+            cur.execute("DELETE FROM lead_status WHERE instance_id = %s", (instance_id,))
+            cur.execute("DELETE FROM ai_memory WHERE instance_id = %s", (instance_id,))
+            cur.execute("UPDATE billing_accounts SET instance_id = NULL WHERE instance_id = %s", (instance_id,))
+            cur.execute("DELETE FROM instances WHERE id = %s", (instance_id,))
+            cur.execute(
+                """
+                INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description, created_at)
+                VALUES (%s, 'delete_instance', 'instance', %s, %s, NOW())
+                """,
+                (
+                    admin_id,
+                    instance_id,
+                    f"Instância deletada (user_id={instance_user_id}, phone={instance_phone or 'N/A'})"
+                ),
+            )
+            conn.commit()
+
+    return {"ok": True, "message": "Instância deletada com sucesso"}
+
+
 @router.get("/activity")
 async def get_activity(admin: Dict = Depends(get_current_admin)):
     """Log de atividades recentes"""
