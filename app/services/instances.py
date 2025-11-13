@@ -212,6 +212,6 @@ def count_instances(user_id: int) -> int:
             finally:
                 cur.close()
 
-    # memory
+    # memor
     with _lock:
         return len(_mem.get(user_id, {}))
