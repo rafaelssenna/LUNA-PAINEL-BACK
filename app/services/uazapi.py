@@ -105,16 +105,21 @@ async def create_instance(instance_name: str) -> Dict[str, Any]:
         log.error(f"❌ Erro inesperado: {type(e).__name__}: {e}")
         raise UazapiError(f"Erro inesperado: {str(e)}")
 
-async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
+async def connect_instance(instance_id: str, token: str, max_retries: int = 3) -> Dict[str, Any]:
     """
     Conecta a instância e gera o QR Code.
     Endpoint oficial: POST /instance/connect
-    
+
     Conforme docs.uazapi.com:
     - Header: "token" com o token da instância
     - Body vazio ou sem "phone" gera QR Code
     - Body com "phone" gera código de pareamento
-    
+
+    Args:
+        instance_id: ID da instância
+        token: Token da instância
+        max_retries: Número máximo de tentativas (padrão: 3)
+
     Returns:
         {
             "qrcode": "data:image/png;base64,iVBOR...",
@@ -122,58 +127,96 @@ async def connect_instance(instance_id: str, token: str) -> Dict[str, Any]:
             ...
         }
     """
+    import asyncio
+
     url = f"https://{UAZAPI_HOST}/instance/connect"
-    
+
     log.info(f"🔄 [CONNECT] Conectando instância: {instance_id}")
     log.info(f"📤 [CONNECT] URL: {url}")
     log.info(f"📤 [CONNECT] Header token: {token[:20]}...")
-    
-    try:
-        async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
-            # Não enviar phone para gerar QR Code
-            response = await client.post(
-                url,
-                headers={
-                    "Content-Type": "application/json",
-                    "token": token  # Header da instância
-                },
-                json={}  # Body vazio = gera QR code
-            )
-            
-            log.info(f"📥 [CONNECT] Status: {response.status_code}")
-            log.info(f"📥 [CONNECT] Response (primeiros 500): {response.text[:500]}")
-            
-            response.raise_for_status()
-            data = response.json()
-            
-            # QR code está dentro de data["instance"]["qrcode"]
-            instance_data = data.get("instance", {})
-            qrcode = instance_data.get("qrcode", "")
-            paircode = instance_data.get("paircode", "")
-            
-            log.info(f"✅ [CONNECT] Resposta recebida")
-            log.info(f"📊 [CONNECT] QR code: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
-            log.info(f"📊 [CONNECT] Pair code: presente={bool(paircode)}")
-            
-            if qrcode:
-                log.info(f"🎉 [CONNECT] QR CODE GERADO COM SUCESSO!")
-            elif paircode:
-                log.info(f"🎉 [CONNECT] PAIR CODE GERADO: {paircode}")
+
+    # Tentar múltiplas vezes com delay progressivo
+    for attempt in range(1, max_retries + 1):
+        try:
+            log.info(f"🔄 [CONNECT] Tentativa {attempt}/{max_retries}")
+
+            async with httpx.AsyncClient(timeout=DEFAULT_TIMEOUT) as client:
+                # Não enviar phone para gerar QR Code
+                response = await client.post(
+                    url,
+                    headers={
+                        "Content-Type": "application/json",
+                        "token": token  # Header da instância
+                    },
+                    json={}  # Body vazio = gera QR code
+                )
+
+                log.info(f"📥 [CONNECT] Status: {response.status_code}")
+                log.info(f"📥 [CONNECT] Response (primeiros 500): {response.text[:500]}")
+
+                response.raise_for_status()
+                data = response.json()
+
+                # QR code pode estar em vários lugares dependendo da versão da API
+                instance_data = data.get("instance", {})
+                qrcode = instance_data.get("qrcode", "") or data.get("qrcode", "")
+                paircode = instance_data.get("paircode", "") or data.get("paircode", "")
+
+                log.info(f"✅ [CONNECT] Resposta recebida")
+                log.info(f"📊 [CONNECT] QR code: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
+                log.info(f"📊 [CONNECT] Pair code: presente={bool(paircode)}")
+
+                if qrcode:
+                    log.info(f"🎉 [CONNECT] QR CODE GERADO COM SUCESSO!")
+                    # Retornar imediatamente se conseguiu o QR code
+                    return {
+                        "qrcode": qrcode,
+                        "paircode": paircode,
+                        "status": instance_data.get("status", "connecting"),
+                        "connected": data.get("connected", False)
+                    }
+                elif paircode:
+                    log.info(f"🎉 [CONNECT] PAIR CODE GERADO: {paircode}")
+                    return {
+                        "qrcode": qrcode,
+                        "paircode": paircode,
+                        "status": instance_data.get("status", "connecting"),
+                        "connected": data.get("connected", False)
+                    }
+                else:
+                    log.warning(f"⚠️ [CONNECT] Tentativa {attempt}: Nenhum QR code ou pair code na resposta!")
+                    log.warning(f"⚠️ [CONNECT] Response completo: {data}")
+
+                    # Se não é a última tentativa, aguardar antes de tentar novamente
+                    if attempt < max_retries:
+                        wait_time = attempt * 2  # 2s, 4s, 6s...
+                        log.info(f"⏳ [CONNECT] Aguardando {wait_time}s antes da próxima tentativa...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        # Última tentativa falhou, retornar o que temos
+                        log.error(f"❌ [CONNECT] Todas as {max_retries} tentativas falharam")
+                        return {
+                            "qrcode": "",
+                            "paircode": "",
+                            "status": instance_data.get("status", "disconnected"),
+                            "connected": False,
+                            "error": "QR code não disponível após múltiplas tentativas"
+                        }
+
+        except httpx.HTTPError as e:
+            log.error(f"❌ [CONNECT] Erro HTTP na tentativa {attempt}: {e}")
+            log.error(f"❌ [CONNECT] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
+
+            # Se não é a última tentativa, aguardar antes de tentar novamente
+            if attempt < max_retries:
+                wait_time = attempt * 2
+                log.info(f"⏳ [CONNECT] Aguardando {wait_time}s antes de tentar novamente...")
+                await asyncio.sleep(wait_time)
             else:
-                log.warning(f"⚠️ [CONNECT] Nenhum QR code ou pair code na resposta!")
-                log.warning(f"⚠️ [CONNECT] Response completo: {data}")
-            
-            # Retornar o qrcode diretamente no nível superior para compatibilidade
-            return {
-                "qrcode": qrcode,
-                "paircode": paircode,
-                "status": instance_data.get("status", ""),
-                "connected": data.get("connected", False)
-            }
-    except httpx.HTTPError as e:
-        log.error(f"❌ [CONNECT] Erro HTTP: {e}")
-        log.error(f"❌ [CONNECT] Response: {e.response.text if hasattr(e, 'response') else 'N/A'}")
-        raise UazapiError(f"Falha ao conectar instância: {str(e)}")
+                raise UazapiError(f"Falha ao conectar instância após {max_retries} tentativas: {str(e)}")
+
+    # Fallback (não deveria chegar aqui)
+    raise UazapiError(f"Falha ao conectar instância")
 
 async def fetch_instance_info(instance_id: str, token: str) -> Dict[str, Any]:
     """
