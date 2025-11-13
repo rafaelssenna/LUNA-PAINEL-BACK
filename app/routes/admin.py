@@ -12,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header
 from pydantic import BaseModel, EmailStr
 
 from app.pg import get_pool
+from app.services import uazapi
 
 router = APIRouter()
 log = logging.getLogger("uvicorn.error")
