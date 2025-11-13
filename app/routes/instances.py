@@ -98,17 +98,18 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                         (existing_id,)
                     )
                     token_row = cur.fetchone()
-                    
+
                     if token_row and token_row["uazapi_token"]:
                         existing_token = token_row["uazapi_token"]
-                        
-                        # Gerar novo QR code
+
+                        # Gerar novo QR code (com retry automático)
                         qr_result = await uazapi.get_qrcode(existing_id, existing_token)
                         qr_data = qr_result.get("qrcode", "")
-                        
+                        qr_error = qr_result.get("error", "")
+
                         if qr_data:
                             log.info(f"✅ [CREATE] QR code obtido para instância existente!")
-                            
+
                             # Buscar admin_status
                             cur.execute(
                                 "SELECT admin_status FROM instances WHERE id = %s",
@@ -116,7 +117,7 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                             )
                             admin_row = cur.fetchone()
                             admin_status = admin_row["admin_status"] if admin_row else "pending_config"
-                            
+
                             return CreateInstanceOut(
                                 instance_id=existing_id,
                                 status=existing_status,
@@ -125,8 +126,12 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                                 uazapi_token=existing_token,
                                 message="Instância encontrada! Escaneie o QR Code."
                             )
+                        elif qr_error:
+                            log.warning(f"⚠️ [CREATE] {qr_error}")
                 except Exception as e:
                     log.error(f"❌ [CREATE] Erro ao buscar QR code da instância existente: {e}")
+                    import traceback
+                    log.error(f"❌ [CREATE] Traceback: {traceback.format_exc()}")
                 
                 # Fallback: retornar sem QR code
                 return CreateInstanceOut(
@@ -226,17 +231,23 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         
         # 4. Conectar instância e buscar QR Code
         qr_data = instance_data.get("qrcode")  # Tentar da resposta primeiro
-        
+
         log.info(f"📊 [CREATE] QR code na resposta de criação: presente={bool(qr_data)}")
-        
+
         if not qr_data:
-            # QR code não veio na criação, chamar /instance/connect
+            # QR code não veio na criação, aguardar um pouco e chamar /instance/connect
             try:
+                import asyncio
+
+                # Aguardar 3 segundos para a instância ficar pronta
+                log.info(f"⏳ [CREATE] Aguardando 3s para instância ficar pronta...")
+                await asyncio.sleep(3)
+
                 log.info(f"🔄 [CREATE] QR code vazio, chamando /instance/connect...")
                 qr_result = await uazapi.get_qrcode(instance_id, instance_token)
                 qr_data = qr_result.get("qrcode")
                 paircode = qr_result.get("paircode")
-                
+
                 if qr_data:
                     log.info(f"✅ [CREATE] QR code obtido! (length: {len(qr_data)})")
                 elif paircode:
@@ -246,6 +257,8 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
                     log.warning(f"⚠️ [CREATE] Usuário pode obter depois via /instances/{instance_id}/qrcode")
             except Exception as e:
                 log.error(f"❌ [CREATE] Falha ao obter QR code: {e}")
+                import traceback
+                log.error(f"❌ [CREATE] Traceback: {traceback.format_exc()}")
         
         # 4. Iniciar trial de 14 dias automaticamente (por e-mail)
         try:
@@ -289,15 +302,17 @@ async def get_qrcode_route(
 ):
     """
     Retorna o QR Code de uma instância.
-    
+
     Fluxo UAZAPI (conforme docs.uazapi.com):
     1. POST /instance/connect gera QR Code (válido por 2 minutos)
     2. Status fica "connecting" após escanear
     3. Status muda para "connected" quando finalizado
     4. Se QR expirar, este endpoint regerará automaticamente
+
+    Agora com retry automático para maior confiabilidade!
     """
     user_id = user["id"]
-    
+
     # Verificar permissão (instance_id já é o ID da UAZAPI)
     with get_pool().connection() as conn:
         with conn.cursor() as cur:
@@ -306,37 +321,51 @@ async def get_qrcode_route(
                 (instance_id, user_id)
             )
             row = cur.fetchone()
-            
+
             if not row:
                 raise HTTPException(404, "Instância não encontrada")
-            
+
             token = row["uazapi_token"]
             status = row["status"]
-            
+
             if status == "connected":
                 return {
                     "instance_id": instance_id,
                     "status": "connected",
                     "message": "WhatsApp já está conectado!"
                 }
-    
+
     # Buscar/Regerar QR Code (sempre chama /instance/connect para QR novo)
+    # Agora com retry automático (até 3 tentativas)
     try:
         log.info(f"🔄 [QRCODE] Gerando QR Code para instância {instance_id}")
         result = await uazapi.get_qrcode(instance_id, token)
-        
+
         qrcode = result.get("qrcode", "")
+        qr_error = result.get("error", "")
+
         log.info(f"📊 [QRCODE] QR Code gerado: presente={bool(qrcode)}, length={len(qrcode) if qrcode else 0}")
-        
-        return {
-            "instance_id": instance_id,
-            "qrcode": qrcode,
-            "status": result.get("status", "qr_code"),
-            "message": "QR Code válido por 2 minutos. Escaneie com WhatsApp Business."
-        }
+
+        if qrcode:
+            return {
+                "instance_id": instance_id,
+                "qrcode": qrcode,
+                "status": result.get("status", "qr_code"),
+                "message": "QR Code válido por 2 minutos. Escaneie com WhatsApp Business."
+            }
+        else:
+            # QR code não disponível mesmo após retry
+            error_msg = qr_error or "QR Code não disponível no momento. Tente novamente em alguns segundos."
+            return {
+                "instance_id": instance_id,
+                "qrcode": "",
+                "status": "error",
+                "message": error_msg
+            }
+
     except uazapi.UazapiError as e:
         log.error(f"❌ [QRCODE] Erro ao gerar QR Code: {e}")
-        raise HTTPException(500, str(e))
+        raise HTTPException(500, f"Erro ao gerar QR Code: {str(e)}")
 
 @router.get("/{instance_id}/status", response_model=InstanceStatusOut)
 async def get_status_route(
