@@ -1,6 +1,6 @@
 # ROTAS ADMINISTRATIVAS - PAINEL ADMIN
 from __future__ import annotations
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta, timezone
 import logging
 import os
@@ -8,11 +8,13 @@ import jwt
 import bcrypt
 import json
 
-from fastapi import APIRouter, HTTPException, Depends, Header
+from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File, BackgroundTasks
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, EmailStr
 
 from app.pg import get_pool
 from app.services import uazapi
+from app.services import loop as loop_service
 
 router = APIRouter()
 log = logging.getLogger("uvicorn.error")
@@ -37,6 +39,22 @@ class ConfigureInstanceIn(BaseModel):
     prompt: str
     notes: str = ""
     redirect_phone: str = ""  # ✅ Número para handoff específico dessa Luna
+
+
+class LoopSettingsIn(BaseModel):
+    auto_run: Optional[bool] = None
+    ia_auto: Optional[bool] = None
+    daily_limit: Optional[int] = None
+    message_template: Optional[str] = None
+    window_start: Optional[str] = None
+    window_end: Optional[str] = None
+
+
+class PaginationQuery(BaseModel):
+    page: int = 1
+    page_size: int = 50
+    search: Optional[str] = None
+    status: Optional[str] = None
 
 # ==============================================================================
 # AUTENTICAÇÃO ADMIN
@@ -749,6 +767,100 @@ async def delete_instance(
             conn.commit()
 
     return {"ok": True, "message": "Instância deletada com sucesso"}
+
+
+def _parse_pagination_query(page: Optional[int], page_size: Optional[int], search: Optional[str], status: Optional[str]):
+    page = max(page or 1, 1)
+    page_size = max(min(page_size or 50, 200), 1)
+    search = search.strip() if search else None
+    status = status.strip() if status else None
+    return page, page_size, search, status
+
+
+@router.get("/instances/{instance_id}/loop/settings")
+async def get_loop_settings(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    return loop_service.get_loop_settings(instance_id)
+
+
+@router.put("/instances/{instance_id}/loop/settings")
+async def update_loop_settings_endpoint(
+    instance_id: str,
+    payload: LoopSettingsIn,
+    admin: Dict = Depends(get_current_admin)
+):
+    return loop_service.update_loop_settings(instance_id, payload.model_dump(exclude_none=True))
+
+
+@router.get("/instances/{instance_id}/loop/state")
+async def get_loop_state(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    return loop_service.get_loop_state(instance_id)
+
+
+@router.post("/instances/{instance_id}/loop/start")
+async def start_loop(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    admin_id = int(str(admin.get("sub", "")).split(":")[-1]) if admin.get("sub") else None
+    return await loop_service.request_loop_start(instance_id, admin_id=admin_id)
+
+
+@router.post("/instances/{instance_id}/loop/stop")
+async def stop_loop(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    return await loop_service.request_loop_stop(instance_id)
+
+
+@router.get("/instances/{instance_id}/loop/progress")
+async def stream_loop_progress(instance_id: str, admin: Dict = Depends(get_current_admin)):
+    async def event_stream():
+        async for chunk in loop_service.stream_progress(instance_id):
+            yield chunk
+
+    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+
+@router.get("/instances/{instance_id}/loop/queue")
+async def list_loop_queue(
+    instance_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    admin: Dict = Depends(get_current_admin)
+):
+    page, page_size, search, _ = _parse_pagination_query(page, page_size, search, None)
+    return loop_service.list_queue(instance_id, page=page, page_size=page_size, search=search)
+
+
+@router.get("/instances/{instance_id}/loop/totals")
+async def list_loop_totals(
+    instance_id: str,
+    page: int = 1,
+    page_size: int = 50,
+    search: Optional[str] = None,
+    status: Optional[str] = None,
+    admin: Dict = Depends(get_current_admin)
+):
+    page, page_size, search, status = _parse_pagination_query(page, page_size, search, status)
+    return loop_service.list_totals(instance_id, page=page, page_size=page_size, search=search, status=status)
+
+
+@router.post("/instances/{instance_id}/loop/contacts")
+async def add_loop_contact(
+    instance_id: str,
+    body: Dict[str, Any],
+    admin: Dict = Depends(get_current_admin)
+):
+    name = body.get("name")
+    phone = body.get("phone")
+    niche = body.get("niche")
+    return loop_service.add_contact(instance_id, name, phone, niche)
+
+
+@router.post("/instances/{instance_id}/loop/import")
+async def import_loop_contacts(
+    instance_id: str,
+    file: UploadFile = File(...),
+    admin: Dict = Depends(get_current_admin)
+):
+    content = await file.read()
+    return loop_service.import_contacts_from_csv(instance_id, content)
 
 
 @router.get("/activity")
