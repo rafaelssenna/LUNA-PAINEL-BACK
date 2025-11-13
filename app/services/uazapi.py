@@ -386,7 +386,7 @@ async def set_webhook(instance_id: str, token: str, webhook_url: str) -> Dict[st
                 url,
                 headers={
                     "Content-Type": "application/json",
-                    "token": token  # Token da instância (não admintoken)
+                    "token": token  # Token da instância (não admintoken
                 },
                 json={
                     "enabled": True,
