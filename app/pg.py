@@ -105,6 +105,52 @@ def init_schema():
     
     CREATE INDEX IF NOT EXISTS idx_instances_user_id ON instances(user_id);
     CREATE INDEX IF NOT EXISTS idx_instances_status ON instances(status);
+
+    -- =========================================
+    -- INSTANCE QUEUE & TOTALS (contatos por instância)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS instance_queue (
+      instance_id   TEXT NOT NULL,
+      phone         TEXT NOT NULL,
+      name          TEXT,
+      niche         TEXT,
+      region        TEXT,
+      created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (instance_id, phone)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_instance_queue_created
+      ON instance_queue(instance_id, created_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_instance_queue_name
+      ON instance_queue(instance_id, LOWER(name));
+
+    CREATE TABLE IF NOT EXISTS instance_totals (
+      instance_id       TEXT NOT NULL,
+      phone             TEXT NOT NULL,
+      name              TEXT,
+      niche             TEXT,
+      region            TEXT,
+      mensagem_enviada  BOOLEAN NOT NULL DEFAULT FALSE,
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (instance_id, phone)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_instance_totals_sent
+      ON instance_totals(instance_id, mensagem_enviada);
+    CREATE INDEX IF NOT EXISTS idx_instance_totals_updated
+      ON instance_totals(instance_id, updated_at DESC);
+
+    CREATE TABLE IF NOT EXISTS instance_settings (
+      instance_id      TEXT PRIMARY KEY,
+      daily_limit      INTEGER NOT NULL DEFAULT 30,
+      auto_run         BOOLEAN NOT NULL DEFAULT FALSE,
+      ia_auto          BOOLEAN NOT NULL DEFAULT FALSE,
+      message_template TEXT,
+      updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_instance_settings_updated
+      ON instance_settings(updated_at DESC);
     
     -- =========================================
     -- LEAD STATUS
@@ -440,65 +486,6 @@ def init_schema():
     COMMENT ON COLUMN ai_memory.role IS 'Papel da mensagem: user, assistant ou system';
     COMMENT ON COLUMN ai_memory.content IS 'Conteúdo da mensagem';
     COMMENT ON COLUMN ai_memory.metadata IS 'Dados adicionais (chat_id, message_id, etc)';
-
-    -- =========================================
-    -- LOOP (Fila, totais e configurações por instância)
-    -- =========================================
-    CREATE TABLE IF NOT EXISTS instance_loop_settings (
-      instance_id     TEXT PRIMARY KEY REFERENCES instances(id) ON DELETE CASCADE,
-      auto_run        BOOLEAN NOT NULL DEFAULT FALSE,
-      ia_auto         BOOLEAN NOT NULL DEFAULT FALSE,
-      daily_limit     INTEGER,
-      message_template TEXT,
-      window_start    TIME NOT NULL DEFAULT '08:00:00',
-      window_end      TIME NOT NULL DEFAULT '18:00:00',
-      last_run_at     TIMESTAMPTZ,
-      loop_status     TEXT NOT NULL DEFAULT 'idle',
-      updated_at      TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE TABLE IF NOT EXISTS instance_loop_queue (
-      id           BIGSERIAL PRIMARY KEY,
-      instance_id  TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-      name         TEXT,
-      phone        TEXT NOT NULL,
-      niche        TEXT,
-      source       TEXT NOT NULL DEFAULT 'manual',
-      status       TEXT NOT NULL DEFAULT 'pending',
-      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_loop_queue_instance_status
-      ON instance_loop_queue(instance_id, status, created_at DESC);
-    CREATE INDEX IF NOT EXISTS idx_loop_queue_instance_phone
-      ON instance_loop_queue(instance_id, phone);
-
-    CREATE TABLE IF NOT EXISTS instance_loop_totals (
-      id                BIGSERIAL PRIMARY KEY,
-      instance_id       TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-      name              TEXT,
-      phone             TEXT NOT NULL,
-      niche             TEXT,
-      mensagem_enviada  BOOLEAN NOT NULL DEFAULT FALSE,
-      status            TEXT DEFAULT 'pending',
-      updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE UNIQUE INDEX IF NOT EXISTS uq_loop_totals_instance_phone
-      ON instance_loop_totals(instance_id, phone);
-    CREATE INDEX IF NOT EXISTS idx_loop_totals_instance_status
-      ON instance_loop_totals(instance_id, mensagem_enviada, updated_at DESC);
-
-    CREATE TABLE IF NOT EXISTS instance_loop_events (
-      id           BIGSERIAL PRIMARY KEY,
-      instance_id  TEXT NOT NULL REFERENCES instances(id) ON DELETE CASCADE,
-      event_type   TEXT NOT NULL,
-      payload      JSONB DEFAULT '{}'::jsonb,
-      created_at   TIMESTAMPTZ NOT NULL DEFAULT NOW()
-    );
-
-    CREATE INDEX IF NOT EXISTS idx_loop_events_instance_created
-      ON instance_loop_events(instance_id, created_at DESC);
     """
     with get_pool().connection() as con:
         con.execute(sql)
