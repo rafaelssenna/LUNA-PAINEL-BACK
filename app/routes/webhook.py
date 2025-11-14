@@ -265,10 +265,11 @@ async def save_message(instance_id: str, chatid: str, text: str, direction: str)
                 cur.execute(
                     """
                     INSERT INTO messages
-                    (instance_id, chat_id, content, from_me, message_id, timestamp, created_at, sender)
-                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (instance_id, chat_id, content, from_me, msgid, timestamp, created_at)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT (instance_id, chat_id, msgid) DO NOTHING
                     """,
-                    (instance_id, chatid, text, from_me, message_id, timestamp, datetime.utcnow(), chatid)
+                    (instance_id, chatid, text, from_me, message_id, timestamp, datetime.utcnow())
                 )
 
                 # 2. Criar ou atualizar chat
