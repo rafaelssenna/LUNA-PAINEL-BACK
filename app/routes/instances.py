@@ -328,12 +328,40 @@ async def get_qrcode_route(
             token = row["uazapi_token"]
             status = row["status"]
 
+            # Verificar status REAL na UAZAPI antes de retornar "connected"
+            # Isso evita mostrar "conectado" quando o token é inválido
             if status == "connected":
-                return {
-                    "instance_id": instance_id,
-                    "status": "connected",
-                    "message": "WhatsApp já está conectado!"
-                }
+                try:
+                    # Tentar verificar status real
+                    state_data = await uazapi.get_connection_state(instance_id, token)
+                    real_status = state_data.get("status", "disconnected")
+
+                    if real_status == "connected":
+                        return {
+                            "instance_id": instance_id,
+                            "status": "connected",
+                            "message": "WhatsApp já está conectado!"
+                        }
+                    else:
+                        # Status mudou, atualizar no banco e gerar novo QR
+                        log.info(f"[QRCODE] Status mudou de connected para {real_status}, gerando novo QR Code")
+                        cur.execute(
+                            "UPDATE instances SET status = %s WHERE id = %s",
+                            ("disconnected", instance_id)
+                        )
+                        conn.commit()
+                except Exception as e:
+                    error_str = str(e)
+                    # Se erro 401, token inválido - gerar novo QR Code
+                    if "401" in error_str or "Invalid token" in error_str or "Unauthorized" in error_str:
+                        log.warning(f"[QRCODE] Token inválido detectado (erro 401), forçando reconexão")
+                        cur.execute(
+                            "UPDATE instances SET status = %s WHERE id = %s",
+                            ("disconnected", instance_id)
+                        )
+                        conn.commit()
+                    else:
+                        log.warning(f"[QRCODE] Erro ao verificar status: {e}, continuando com QR Code")
 
     # Buscar/Regerar QR Code (sempre chama /instance/connect para QR novo)
     # Agora com retry automático (até 3 tentativas)
@@ -672,12 +700,13 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                     if "401" in error_str or "Invalid token" in error_str or "Unauthorized" in error_str:
                         error_type = "invalid_token"
                         error_message = "Token UAZAPI inválido ou expirado. Por favor, reconecte sua instância."
-                        print(f"[STATUS] ❌ Token UAZAPI inválido para instância {row['id']}")
+                        real_status = "disconnected"  # Forçar status desconectado quando token inválido
+                        print(f"[STATUS] ❌ Token UAZAPI inválido para instância {row['id']} - forçando status disconnected")
                     else:
                         error_type = "uazapi_error"
                         error_message = f"Erro ao verificar status: {error_str}"
 
-                    # Em caso de falha, mantemos o status do banco
+                    # Em caso de falha, mantemos o status do banco (ou desconectado se token inválido)
             else:
                 print(f"[STATUS] Sem token salvo, usando status do banco: {instance_status}")
 
