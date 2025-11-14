@@ -475,14 +475,23 @@ async def get_qrcode_route(
                         conn.commit()
                 except Exception as e:
                     error_str = str(e)
-                    # Se erro 401, token inválido - gerar novo QR Code
+                    # Se erro 401, token inválido - NÃO tentar gerar QR Code
                     if "401" in error_str or "Invalid token" in error_str or "Unauthorized" in error_str:
-                        log.warning(f"[QRCODE] Token inválido detectado (erro 401), forçando reconexão")
+                        log.warning(f"[QRCODE] Token inválido detectado (erro 401), retornando erro especial")
                         cur.execute(
                             "UPDATE instances SET status = %s WHERE id = %s",
                             ("disconnected", instance_id)
                         )
                         conn.commit()
+
+                        # Retornar erro especial para frontend saber que precisa recriar
+                        raise HTTPException(
+                            status_code=401,
+                            detail={
+                                "error": "invalid_token",
+                                "message": "Token UAZAPI inválido. Use a rota /api/instances/recreate para criar nova instância."
+                            }
+                        )
                     else:
                         log.warning(f"[QRCODE] Erro ao verificar status: {e}, continuando com QR Code")
 
