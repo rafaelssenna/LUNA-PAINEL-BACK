@@ -641,6 +641,9 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
             # correto da resposta, confiando no campo instance.status ao invés do
             # booleano "connected" raiz.
             real_status = instance_status  # Fallback caso não possamos verificar
+            error_type = None  # Campo para indicar tipo de erro (se houver)
+            error_message = None  # Mensagem de erro detalhada
+
             if instance_token:
                 try:
                     # O ID da instância pode ser encontrado em `instance_id` ou `id`
@@ -652,7 +655,7 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                         real_status = "connected"
                     else:
                         real_status = "disconnected"
-                    
+
                     # Atualizar no banco se mudou
                     if real_status != instance_status:
                         cur.execute(
@@ -662,7 +665,18 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                         conn.commit()
                         print(f"[STATUS] Instância {row['id']} atualizada: {instance_status} -> {real_status}")
                 except Exception as e:
+                    error_str = str(e)
                     print(f"[STATUS] Erro ao consultar a UAZAPI: {e}")
+
+                    # Detectar erro de token inválido
+                    if "401" in error_str or "Invalid token" in error_str or "Unauthorized" in error_str:
+                        error_type = "invalid_token"
+                        error_message = "Token UAZAPI inválido ou expirado. Por favor, reconecte sua instância."
+                        print(f"[STATUS] ❌ Token UAZAPI inválido para instância {row['id']}")
+                    else:
+                        error_type = "uazapi_error"
+                        error_message = f"Erro ao verificar status: {error_str}"
+
                     # Em caso de falha, mantemos o status do banco
             else:
                 print(f"[STATUS] Sem token salvo, usando status do banco: {instance_status}")
@@ -687,7 +701,7 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                 message = "Status desconhecido. Entre em contato com o suporte."
                 banner_type = "warning"
             
-            return {
+            response_data = {
                 "has_instance": True,
                 "instance_id": row["id"],
                 "status": instance_status,
@@ -701,3 +715,10 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                 "message": message,
                 "banner_type": banner_type
             }
+
+            # Adicionar informações de erro se houver
+            if error_type:
+                response_data["error_type"] = error_type
+                response_data["error_message"] = error_message
+
+            return response_data
