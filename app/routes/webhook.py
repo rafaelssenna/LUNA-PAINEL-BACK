@@ -449,8 +449,9 @@ async def process_message(instance_id: str, number: str, text: str):
             log.warning(f"⚠️ [IA] WhatsApp desconectado (status: {config['status']})")
             return
         
-        # Salva mensagem do usuário (SEMPRE, independente de billing)
-        await save_message(instance_id, number, text, "in")
+        # Mensagem já foi salva no webhook, não precisa salvar novamente
+        # (comentado para evitar duplicação)
+        # await save_message(instance_id, number, text, "in")
         
         # ✅ SALVA NA MEMÓRIA DA IA (ai_memory) - CRITICAL!
         log.info(f"💾 [MEMORY] Salvando mensagem do usuário ANTES de buscar histórico")
@@ -726,7 +727,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     if not text:
         log.warning("⚠️ [WEBHOOK] Texto vazio! Ignorando.")
         return {"ok": True, "ignored": "no_text"}
-    
+
+    # ✅ SALVAR MENSAGEM E CHAT IMEDIATAMENTE (sempre, independente de configuração)
+    try:
+        await save_message(instance_id, number, text, "in")
+        log.info(f"✅ [WEBHOOK] Mensagem e chat salvos: {number}")
+    except Exception as e:
+        log.error(f"❌ [WEBHOOK] Erro ao salvar mensagem: {e}")
+
     # Buffer de agregação (7 segundos)
     key = f"{instance_id}:{number}"
     now = datetime.now()
