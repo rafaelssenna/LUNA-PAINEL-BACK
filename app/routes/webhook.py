@@ -251,7 +251,7 @@ async def get_history(number: str, instance_id: str) -> List[Dict[str, str]]:
 
 
 async def save_message(instance_id: str, chatid: str, text: str, direction: str):
-    """Salva mensagem no banco"""
+    """Salva mensagem no banco e cria/atualiza chat"""
     try:
         import time
         pool = get_pool()
@@ -260,18 +260,43 @@ async def save_message(instance_id: str, chatid: str, text: str, direction: str)
                 from_me = (direction == "out")
                 message_id = f"msg_{int(time.time() * 1000)}"
                 timestamp = int(time.time())
-                
+
+                # 1. Salvar mensagem
                 cur.execute(
                     """
-                    INSERT INTO messages 
+                    INSERT INTO messages
                     (instance_id, chat_id, content, from_me, message_id, timestamp, created_at, sender)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                     """,
                     (instance_id, chatid, text, from_me, message_id, timestamp, datetime.utcnow(), chatid)
                 )
+
+                # 2. Criar ou atualizar chat
+                log.info(f"💾 [CHAT] Criando/atualizando chat: {chatid}")
+                cur.execute(
+                    """
+                    INSERT INTO chats (
+                        instance_id, wa_chatid, wa_name,
+                        wa_lastMsgTimestamp, wa_lastMessageText,
+                        wa_lastFromMe, wa_unreadCount, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, 0, NOW(), NOW())
+                    ON CONFLICT (instance_id, wa_chatid) DO UPDATE SET
+                        wa_lastMsgTimestamp = EXCLUDED.wa_lastMsgTimestamp,
+                        wa_lastMessageText = EXCLUDED.wa_lastMessageText,
+                        wa_lastFromMe = EXCLUDED.wa_lastFromMe,
+                        wa_unreadCount = CASE
+                            WHEN EXCLUDED.wa_lastFromMe = false THEN chats.wa_unreadCount + 1
+                            ELSE chats.wa_unreadCount
+                        END,
+                        updated_at = NOW()
+                    """,
+                    (instance_id, chatid, chatid, timestamp, text, from_me)
+                )
+
                 conn.commit()
+                log.info(f"✅ [CHAT] Chat {chatid} criado/atualizado com sucesso!")
     except Exception as e:
-        log.warning(f"Erro ao salvar mensagem: {e}")
+        log.warning(f"Erro ao salvar mensagem/chat: {e}")
 
 
 async def send_whatsapp_text(host: str, token: str, number: str, text: str) -> bool:
