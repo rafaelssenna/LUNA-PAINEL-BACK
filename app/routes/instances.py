@@ -904,3 +904,58 @@ async def get_my_instance_status(request: Request, user: Dict[str, Any] = Depend
                 response_data["error_message"] = error_message
 
             return response_data
+
+@router.post("/configure-webhook")
+async def configure_webhook_route(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Configura o webhook manualmente para a instância do usuário.
+    Útil quando o webhook não foi configurado automaticamente na criação/conexão.
+    """
+    user_id = user["id"]
+
+    log.info(f"🔗 [WEBHOOK] Configurando webhook manual para usuário {user_id}")
+
+    # Buscar instância do usuário
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, uazapi_token, status FROM instances WHERE user_id = %s LIMIT 1",
+                (user_id,)
+            )
+            row = cur.fetchone()
+
+            if not row:
+                raise HTTPException(404, "Instância não encontrada")
+
+            instance_id = row["id"]
+            token = row["uazapi_token"]
+            status = row["status"]
+
+            # Verificar se está conectado
+            if status != "connected":
+                raise HTTPException(400, "WhatsApp não está conectado. Conecte primeiro.")
+
+    # Configurar webhook
+    try:
+        log.info(f"🔗 [WEBHOOK] Configurando webhook para instância {instance_id}")
+        log.info(f"🔗 [WEBHOOK] URL: {WEBHOOK_URL}")
+
+        webhook_result = await uazapi.set_webhook(
+            instance_id=instance_id,
+            token=token,
+            webhook_url=WEBHOOK_URL
+        )
+
+        log.info(f"✅ [WEBHOOK] Webhook configurado com sucesso!")
+        log.info(f"✅ [WEBHOOK] Resultado: {webhook_result}")
+
+        return {
+            "success": True,
+            "message": "Webhook configurado com sucesso! Agora você receberá mensagens.",
+            "webhook_url": WEBHOOK_URL,
+            "instance_id": instance_id
+        }
+
+    except Exception as e:
+        log.error(f"❌ [WEBHOOK] Erro ao configurar webhook: {e}")
+        raise HTTPException(500, f"Erro ao configurar webhook: {str(e)}")
