@@ -263,7 +263,29 @@ def init_schema():
 
     CREATE INDEX IF NOT EXISTS idx_messages_ts
       ON messages(timestamp DESC);
-    
+
+    -- =========================================
+    -- CHATS (conversas)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS chats (
+      instance_id           TEXT        NOT NULL,
+      wa_chatid             TEXT        NOT NULL,
+      wa_name               TEXT,
+      wa_lastMsgTimestamp   BIGINT      NOT NULL DEFAULT 0,
+      wa_lastMessageText    TEXT,
+      wa_lastFromMe         BOOLEAN     NOT NULL DEFAULT FALSE,
+      wa_unreadCount        INTEGER     NOT NULL DEFAULT 0,
+      created_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at            TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      PRIMARY KEY (instance_id, wa_chatid)
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_chats_instance
+      ON chats(instance_id, updated_at DESC);
+
+    CREATE INDEX IF NOT EXISTS idx_chats_timestamp
+      ON chats(instance_id, wa_lastMsgTimestamp DESC);
+
     -- =========================================
     -- ADMIN USERS (administradores do sistema)
     -- =========================================
