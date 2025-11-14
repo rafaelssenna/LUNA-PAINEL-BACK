@@ -524,7 +524,28 @@ async def get_qrcode_route(
             }
 
     except uazapi.UazapiError as e:
+        error_str = str(e)
         log.error(f"❌ [QRCODE] Erro ao gerar QR Code: {e}")
+
+        # Se erro 401, token inválido - retornar erro especial
+        if "401" in error_str or "Invalid token" in error_str or "Unauthorized" in error_str:
+            with get_pool().connection() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        "UPDATE instances SET status = %s WHERE id = %s",
+                        ("disconnected", instance_id)
+                    )
+                    conn.commit()
+
+            log.warning(f"[QRCODE] Token inválido ao gerar QR Code, retornando erro 401")
+            raise HTTPException(
+                status_code=401,
+                detail={
+                    "error": "invalid_token",
+                    "message": "Token UAZAPI inválido. Use a rota /api/instances/recreate para criar nova instância."
+                }
+            )
+
         raise HTTPException(500, f"Erro ao gerar QR Code: {str(e)}")
 
 @router.get("/{instance_id}/status", response_model=InstanceStatusOut)
