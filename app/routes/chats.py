@@ -469,3 +469,65 @@ async def options_chats_stream(request: Request) -> Response:
     Evita 400 em proxies/ambientes que não deixam o CORSMiddleware interceptar.
     """
     return _cors_preflight_response(request)
+
+
+# ------------------ Chats locais (backup/cache) ------------------ #
+@router.get("/chats/local")
+async def list_local_chats(
+    request: Request,
+    limit: int = Query(100, ge=1, le=500),
+    _user=Depends(require_active_tenant_soft),
+    ctx=Depends(get_uazapi_ctx),
+):
+    """
+    Lista chats armazenados localmente no banco de dados.
+    Útil como backup quando a UAZAPI está lenta ou indisponível.
+    """
+    try:
+        instance_id = _get_instance_id_from_request(request)
+
+        if not instance_id:
+            raise HTTPException(status_code=400, detail="instance_id não encontrado")
+
+        from app.pg import get_pool
+
+        pool = get_pool()
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        wa_chatid,
+                        wa_name,
+                        wa_lastMsgTimestamp,
+                        wa_lastMessageText,
+                        wa_lastFromMe,
+                        wa_unreadCount,
+                        updated_at
+                    FROM chats
+                    WHERE instance_id = %s
+                    ORDER BY wa_lastMsgTimestamp DESC
+                    LIMIT %s
+                    """,
+                    (instance_id, limit)
+                )
+                rows = cur.fetchall()
+
+                chats = []
+                for row in rows:
+                    chats.append({
+                        "wa_chatid": row["wa_chatid"],
+                        "wa_name": row["wa_name"],
+                        "wa_lastMsgTimestamp": row["wa_lastmsgtimestamp"],
+                        "wa_lastMessageText": row["wa_lastmessagetext"],
+                        "wa_lastFromMe": row["wa_lastfromme"],
+                        "wa_unreadCount": row["wa_unreadcount"],
+                        "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                    })
+
+                resp = JSONResponse({"items": chats, "total": len(chats)})
+                return _attach_cors_headers_to_response(request, resp)
+
+    except Exception as e:
+        resp = JSONResponse({"error": f"list_local_chats_failed: {str(e)}"}, status_code=500)
+        return _attach_cors_headers_to_response(request, resp)
