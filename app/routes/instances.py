@@ -294,6 +294,129 @@ async def create_instance_route(request: Request, user: Dict[str, Any] = Depends
         log.error(f"❌ Erro inesperado ao criar instância: {e}")
         raise HTTPException(500, "Erro interno ao criar instância")
 
+@router.post("/recreate")
+async def recreate_instance_route(request: Request, user: Dict[str, Any] = Depends(get_current_user)):
+    """
+    Recria a instância do usuário quando o token UAZAPI está inválido (erro 401).
+
+    Fluxo:
+    1. Deletar instância antiga do banco
+    2. Tentar deletar da UAZAPI (ignore se falhar)
+    3. Criar nova instância
+    4. Retornar novo QR Code
+    """
+    user_id = user["id"]
+
+    log.info(f"🔄 [RECREATE] Recriando instância para usuário {user_id}")
+
+    # 1. Buscar instância antiga
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id, uazapi_token FROM instances WHERE user_id = %s LIMIT 1",
+                (user_id,)
+            )
+            old_instance = cur.fetchone()
+
+            if old_instance:
+                old_id = old_instance["id"]
+                old_token = old_instance["uazapi_token"]
+
+                log.info(f"🗑️ [RECREATE] Deletando instância antiga: {old_id}")
+
+                # 2. Tentar deletar da UAZAPI (ignorar erros)
+                try:
+                    await uazapi.delete_instance(old_id, old_token)
+                    log.info(f"✅ [RECREATE] Instância deletada da UAZAPI")
+                except Exception as e:
+                    log.warning(f"⚠️ [RECREATE] Falha ao deletar da UAZAPI (ignorado): {e}")
+
+                # 3. Deletar do banco
+                cur.execute("DELETE FROM instances WHERE id = %s", (old_id,))
+                conn.commit()
+                log.info(f"✅ [RECREATE] Instância removida do banco")
+
+    # 4. Criar nova instância (reusar a lógica de create)
+    timestamp = int(datetime.utcnow().timestamp())
+    instance_name = f"luna_{user_id}_{timestamp}"
+
+    try:
+        # Criar instância na UAZAPI
+        result = await uazapi.create_instance(instance_name)
+        instance_data = result.get("instance", {})
+        instance_id = instance_data.get("instanceId")
+        instance_token = instance_data.get("token")
+
+        if not instance_id or not instance_token:
+            raise HTTPException(500, "UAZAPI não retornou dados completos")
+
+        log.info(f"✅ [RECREATE] Nova instância criada: {instance_id}")
+
+        db_instance_id = instance_id
+
+        # Salvar no banco
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                try:
+                    cur.execute(
+                        """
+                        INSERT INTO instances (
+                            id, instance_id, user_id,
+                            uazapi_token, uazapi_host,
+                            token, host,
+                            status, admin_status, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, NOW())
+                        """,
+                        (
+                            db_instance_id, db_instance_id, user_id,
+                            instance_token, uazapi.UAZAPI_HOST,
+                            instance_token, uazapi.UAZAPI_HOST,
+                            "disconnected", "pending_config"
+                        )
+                    )
+                    conn.commit()
+                except Exception:
+                    # Fallback sem token/host
+                    cur.execute(
+                        """
+                        INSERT INTO instances (
+                            id, instance_id, user_id, uazapi_token, uazapi_host,
+                            status, admin_status, created_at
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, NOW())
+                        """,
+                        (
+                            db_instance_id, db_instance_id, user_id,
+                            instance_token, uazapi.UAZAPI_HOST,
+                            "disconnected", "pending_config"
+                        )
+                    )
+                    conn.commit()
+
+        # Buscar QR Code
+        qr_data = instance_data.get("qrcode")
+
+        if not qr_data:
+            import asyncio
+            await asyncio.sleep(3)
+
+            qr_result = await uazapi.get_qrcode(instance_id, instance_token)
+            qr_data = qr_result.get("qrcode")
+
+        log.info(f"✅ [RECREATE] Instância recriada com sucesso!")
+
+        return {
+            "instance_id": db_instance_id,
+            "status": "disconnected",
+            "admin_status": "pending_config",
+            "qrcode": qr_data if qr_data else "",
+            "uazapi_token": instance_token,
+            "message": "Instância recriada! Escaneie o QR Code com seu WhatsApp."
+        }
+
+    except Exception as e:
+        log.error(f"❌ [RECREATE] Erro ao recriar instância: {e}")
+        raise HTTPException(500, f"Erro ao recriar instância: {str(e)}")
+
 @router.get("/{instance_id}/qrcode")
 async def get_qrcode_route(
     instance_id: str,
