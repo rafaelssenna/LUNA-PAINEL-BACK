@@ -92,6 +92,7 @@ app.add_middleware(
 # --------------------------- Startup ----------------------------------- #
 @app.on_event("startup")
 async def _startup():
+    import asyncio
     logger = logging.getLogger("uvicorn.error")
     logger.info("Inicializando Luna Backend.")
     logger.info("CORS allow_origins: %s", _all_origins)
@@ -104,7 +105,7 @@ async def _startup():
     else:
         safe_db = db_url.split("@")[-1]
         logger.info("✅ DATABASE_URL detectado (host/db: %s)", safe_db)
-    
+
     # Validar UAZAPI (WhatsApp)
     uazapi_admin_token = os.getenv("UAZAPI_ADMIN_TOKEN") or ""
     if not uazapi_admin_token or uazapi_admin_token == "PRECISA_FORNECER_ESSE_TOKEN":
@@ -113,7 +114,7 @@ async def _startup():
         logger.error("❌ Configure no .env: UAZAPI_ADMIN_TOKEN=seu_token_aqui")
     else:
         logger.info("✅ UAZAPI_ADMIN_TOKEN configurado (length: %d)", len(uazapi_admin_token))
-    
+
     # Validar OpenAI (IA)
     openai_key = os.getenv("OPENAI_API_KEY") or ""
     if not openai_key or openai_key == "PRECISA_FORNECER":
@@ -129,6 +130,14 @@ async def _startup():
         logger.info("Schemas verificados/criados com sucesso (lead_status/users/afins).")
     except Exception:
         logger.exception("Falha ao inicializar schema do banco (módulo .pg).")
+
+    # Iniciar task de limpeza de memory leaks
+    try:
+        from .routes.webhook import cleanup_stale_buffers
+        asyncio.create_task(cleanup_stale_buffers())
+        logger.info("✅ Task de limpeza de buffers iniciada")
+    except Exception as e:
+        logger.error(f"❌ Erro ao iniciar task de limpeza: {e}")
 
     # DESABILITADO: Não usamos tabelas tenants/payments, usamos billing
     # try:
