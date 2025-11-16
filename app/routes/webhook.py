@@ -38,14 +38,39 @@ REDIRECT_PHONE = os.getenv("REDIRECT_PHONE", "")  # Fallback global
 
 # Buffer de mensagens (número -> dados pendentes)
 pending_messages: Dict[str, Dict[str, Any]] = {}
-processing_lock: Dict[str, bool] = defaultdict(bool)
+# Lock async por número (thread-safe)
+processing_locks: Dict[str, asyncio.Lock] = {}
 
 # Cliente OpenAI
 openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ==============================================================================
-# FUNÇÕES AUXILIARES
+# LIMPEZA PERIÓDICA DE MEMORY LEAKS
 # ==============================================================================
+async def cleanup_stale_buffers():
+    """Limpa buffers de mensagens abandonados (> 60 segundos)"""
+    while True:
+        try:
+            await asyncio.sleep(60)  # Roda a cada 1 minuto
+            now = datetime.now()
+            stale_keys = []
+
+            for key, entry in pending_messages.items():
+                age = (now - entry["last_update"]).total_seconds()
+                if age > 60:  # Mensagens com mais de 60 segundos
+                    stale_keys.append(key)
+
+            for key in stale_keys:
+                log.warning(f"🧹 [CLEANUP] Removendo buffer abandonado: {key}")
+                pending_messages.pop(key, None)
+
+            # Limpar locks não utilizados (> 100 itens)
+            if len(processing_locks) > 100:
+                log.info(f"🧹 [CLEANUP] Limpando locks antigos ({len(processing_locks)} → 0)")
+                processing_locks.clear()
+
+        except Exception as e:
+            log.error(f"❌ [CLEANUP] Erro na limpeza: {e}")
 
 # ==============================================================================
 # FUNÇÕES AUXILIARES
@@ -414,226 +439,225 @@ async def process_message(instance_id: str, number: str, text: str):
     """
     Processa mensagem com IA
     """
-    try:
-        log.info(f"🤖 [IA] INICIANDO - Mensagem de {number}: \"{text[:50]}...\"")
-        
-        # Lock para evitar processamento duplicado
-        if processing_lock.get(number):
-            log.warning(f"⚠️ [IA] Já processando. Ignorando duplicata.")
-            return
-        
-        processing_lock[number] = True
-        log.info(f"🔒 [IA] Lock adquirido")
-        
-    except Exception as e:
-        log.error(f"❌ [IA] ERRO CRÍTICO NO INÍCIO: {e}")
-        log.error(f"   Traceback: {str(e.__class__.__name__)}: {str(e)}")
+    # Obter ou criar lock para este número (thread-safe)
+    if number not in processing_locks:
+        processing_locks[number] = asyncio.Lock()
+
+    lock = processing_locks[number]
+
+    # Tentar adquirir lock (se já está processando, espera ou ignora)
+    if lock.locked():
+        log.warning(f"⚠️ [IA] Mensagem de {number} já está sendo processada. Ignorando duplicata.")
         return
-    
-    try:
-        # Buscar configuração da instância (prompt, token, redirect_phone)
-        config = await get_instance_config(instance_id)
-        
-        if not config:
-            log.error(f"❌ [IA] Configuração não encontrada!")
-            return
-        
-        # ✅ VERIFICAÇÃO: admin_status deve ser 'configured' ou 'active'
-        admin_status = config.get("admin_status", "")
-        if admin_status not in ["configured", "active"]:
-            log.warning(f"⚠️ [IA] Instância não configurada pelo admin (status: {admin_status})")
-            return
-        
-        # ✅ VERIFICAÇÃO CRÍTICA: Ignorar se desconectado
-        if config["status"] != "connected":
-            log.warning(f"⚠️ [IA] WhatsApp desconectado (status: {config['status']})")
-            return
-        
-        # Mensagem já foi salva no webhook, não precisa salvar novamente
-        # (comentado para evitar duplicação)
-        # await save_message(instance_id, number, text, "in")
-        
-        # ✅ SALVA NA MEMÓRIA DA IA (ai_memory) - CRITICAL!
-        log.info(f"💾 [MEMORY] Salvando mensagem do usuário ANTES de buscar histórico")
-        await save_to_ai_memory(
-            instance_id=instance_id,
-            role="user",
-            content=text,
-            metadata={"chat_id": number, "number": number}
-        )
-        # Pequeno delay para garantir que o banco processou o commit
-        await asyncio.sleep(0.1)
-        log.info(f"💾 [MEMORY] Mensagem do usuário salva! Agora vamos buscar histórico")
-        
-        # ✅ VERIFICAÇÃO DE BILLING: IA só responde se billing ativo
-        user_id = config.get("user_id")
-        user_email = None
-        
-        if user_id:
-            # Buscar email do usuário
-            try:
-                pool = get_pool()
-                with pool.connection() as conn:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT email FROM users WHERE id = %s", (user_id,))
-                        row = cur.fetchone()
-                        if row:
-                            user_email = row[0]
-            except Exception as e:
-                log.error(f"❌ [BILLING] Erro ao buscar email do usuário: {e}")
-        
-        if user_email:
-            # Importar função de billing
-            try:
-                from app.services.billing import is_billing_active, canonical_email_key
-                
-                billing_key = canonical_email_key(user_email)
-                billing_active = await is_billing_active(billing_key)
-                
-                if not billing_active:
-                    log.warning(f"⚠️ [BILLING] Trial expirado ou sem pagamento para {user_email}")
-                    log.warning(f"⚠️ [BILLING] Mensagem salva, mas IA NÃO responderá")
-                    log.warning(f"⚠️ [BILLING] Instância: {instance_id}")
-                    # Mensagem foi salva, mas IA não processa
-                    return
-                
-                log.info(f"✅ [BILLING] Billing ativo para {user_email} - IA processa normalmente")
-            
-            except Exception as e:
-                # Se falhar verificação, permite por segurança
-                log.error(f"❌ [BILLING] Erro ao verificar billing: {e}")
-                log.warning(f"⚠️ [BILLING] Permitindo IA por segurança (falha na verificação)")
-        
-        # Busca histórico (já inclui a mensagem atual salva acima)
-        history = await get_history(number, instance_id)
-        log.info(f"📜 [IA] Histórico: {len(history)} mensagens (incluindo mensagem atual)")
-        
-        # Chama IA
-        log.info(f"🧠 [IA] Chamando OpenAI ({OPENAI_MODEL})...")
-        response = await call_openai(history, config["prompt"])
-        
-        if not response:
-            log.error(f"❌ [IA] OpenAI falhou!")
-            return
-        
-        log.info(f"✅ [IA] OpenAI respondeu")
-        
-        # Processa tool calls (igual TypeScript - processa TODAS em sequência)
-        #
-        # Quando a IA retorna múltiplas chamadas de função (tool_calls), a ordem
-        # original pode colocar um handoff antes de um send_text ou send_menu.
-        # Isso resulta em o lead ser encaminhado para atendimento humano antes de
-        # receber a resposta automática, o que causa a sensação de que a IA não
-        # respondeu. Para garantir que as mensagens sejam enviadas antes do
-        # encaminhamento, reordenamos as chamadas: primeiro enviamos todos os
-        # textos e menus, por último executamos o handoff, se houver.
-        tool_calls = response.get("tool_calls", [])
-        if tool_calls:
-            log.info(f"🤖 [IA] {len(tool_calls)} função(ões) detectada(s)")
 
-            # Separar chamadas em dois grupos: não-handoff e handoff
-            non_handoff_calls = []
-            handoff_calls = []
-            for call in tool_calls:
-                # Ignorar qualquer item que não seja uma chamada de função
-                if call.type != "function":
-                    continue
-                if call.function.name == "handoff":
-                    handoff_calls.append(call)
-                else:
-                    non_handoff_calls.append(call)
+    async with lock:
+        log.info(f"🤖 [IA] INICIANDO - Mensagem de {number}: \"{text[:50]}...\"")
+        log.info(f"🔒 [IA] Lock adquirido para {number}")
 
-            # Processar primeiro textos e menus, depois handoff
-            ordered_calls = non_handoff_calls + handoff_calls
-            
-            for call in ordered_calls:
-                func_name = call.function.name
-                func_args = json.loads(call.function.arguments or "{}")
-                log.info(f"   🔧 Executando: {func_name}")
-                
-                if func_name == "send_text":
-                    msg = func_args.get("message", "")
-                    if msg:
-                        log.info(f"📤 [IA] Enviando: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
-                        await send_whatsapp_text(config["host"], config["token"], number, msg)
-                        await save_message(instance_id, number, msg, "out")
-                        
-                        # ✅ SALVA RESPOSTA DA IA NA MEMÓRIA
-                        await save_to_ai_memory(
-                            instance_id=instance_id,
-                            role="assistant",
-                            content=msg,
-                            metadata={"chat_id": number, "number": number, "function": "send_text"}
-                        )
-                        
-                        log.info(f"✅ [IA] Mensagem enviada com sucesso")
-                        await asyncio.sleep(0.5)
-                
-                elif func_name == "send_menu":
-                    # Menu com botões (igual TypeScript)
-                    menu_question = func_args.get("text", "")
-                    choices = func_args.get("choices", ["sim", "nao"])
-                    footer = func_args.get("footerText", "Escolha uma opção")
-                    
-                    if menu_question:
-                        # Por enquanto, envia como texto simples
-                        # TODO: Implementar botões nativos da UAZAPI
-                        menu_text = f"{menu_question}\n\n"
-                        for i, choice in enumerate(choices, 1):
-                            menu_text += f"{i}. {choice.upper()}\n"
-                        menu_text += f"\n{footer}"
-                        
-                        await send_whatsapp_text(config["host"], config["token"], number, menu_text)
-                        # Salva a PERGUNTA no histórico (não o texto formatado) para manter contexto
-                        await save_message(instance_id, number, menu_question, "out")
-                        
-                        # ✅ SALVA MENU NA MEMÓRIA
-                        await save_to_ai_memory(
-                            instance_id=instance_id,
-                            role="assistant",
-                            content=menu_text,
-                            metadata={"chat_id": number, "number": number, "function": "send_menu", "choices": choices}
-                        )
-                        
-                        log.info(f"   ✅ send_menu executado: {len(choices)} opções")
-                        await asyncio.sleep(0.5)
-                
-                elif func_name == "handoff":
-                    log.info(f"   🎯 HANDOFF detectado!")
-                    await handoff_to_human(number, config["host"], config["token"], config.get("redirect_phone", ""))
-                    await save_message(instance_id, number, "[handoff]", "out")
-                    log.info(f"   ✅ handoff executado")
-                    # Evita delay adicional após último handoff
-                
-                else:
-                    log.warning(f"   ❌ Função desconhecida: {func_name}")
-        
-        # Se não tem tool calls, envia conteúdo direto
-        elif response.get("content"):
-            msg = response["content"].strip()
-            if msg:
-                log.info(f"📤 [IA] Enviando resposta direta: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
-                await send_whatsapp_text(config["host"], config["token"], number, msg)
-                await save_message(instance_id, number, msg, "out")
-                
-                # ✅ SALVA RESPOSTA DIRETA NA MEMÓRIA
-                await save_to_ai_memory(
-                    instance_id=instance_id,
-                    role="assistant",
-                    content=msg,
-                    metadata={"chat_id": number, "number": number, "function": "direct_response"}
-                )
-                
-                log.info(f"✅ [IA] Mensagem enviada com sucesso")
-    
-    except Exception as e:
-        log.error(f"❌ [IA] ERRO FATAL ao processar mensagem!")
-        log.error(f"   Tipo: {e.__class__.__name__}")
-        log.error(f"   Mensagem: {str(e)}")
-        import traceback
-        log.error(f"   Traceback completo:\n{traceback.format_exc()}")
-    finally:
-        processing_lock[number] = False
+        try:
+            # Buscar configuração da instância (prompt, token, redirect_phone)
+            config = await get_instance_config(instance_id)
+
+            if not config:
+                log.error(f"❌ [IA] Configuração não encontrada!")
+                return
+
+            # ✅ VERIFICAÇÃO: admin_status deve ser 'configured' ou 'active'
+            admin_status = config.get("admin_status", "")
+            if admin_status not in ["configured", "active"]:
+                log.warning(f"⚠️ [IA] Instância não configurada pelo admin (status: {admin_status})")
+                return
+
+            # ✅ VERIFICAÇÃO CRÍTICA: Ignorar se desconectado
+            if config["status"] != "connected":
+                log.warning(f"⚠️ [IA] WhatsApp desconectado (status: {config['status']})")
+                return
+
+            # Mensagem já foi salva no webhook, não precisa salvar novamente
+            # (comentado para evitar duplicação)
+            # await save_message(instance_id, number, text, "in")
+
+            # ✅ SALVA NA MEMÓRIA DA IA (ai_memory) - CRITICAL!
+            log.info(f"💾 [MEMORY] Salvando mensagem do usuário ANTES de buscar histórico")
+            await save_to_ai_memory(
+                instance_id=instance_id,
+                role="user",
+                content=text,
+                metadata={"chat_id": number, "number": number}
+            )
+            # Pequeno delay para garantir que o banco processou o commit
+            await asyncio.sleep(0.1)
+            log.info(f"💾 [MEMORY] Mensagem do usuário salva! Agora vamos buscar histórico")
+
+            # ✅ VERIFICAÇÃO DE BILLING: IA só responde se billing ativo
+            user_id = config.get("user_id")
+            user_email = None
+
+            if user_id:
+                # Buscar email do usuário
+                try:
+                    pool = get_pool()
+                    with pool.connection() as conn:
+                        with conn.cursor() as cur:
+                            cur.execute("SELECT email FROM users WHERE id = %s", (user_id,))
+                            row = cur.fetchone()
+                            if row:
+                                user_email = row[0]
+                except Exception as e:
+                    log.error(f"❌ [BILLING] Erro ao buscar email do usuário: {e}")
+
+            if user_email:
+                # Importar função de billing
+                try:
+                    from app.services.billing import is_billing_active, canonical_email_key
+
+                    billing_key = canonical_email_key(user_email)
+                    billing_active = await is_billing_active(billing_key)
+
+                    if not billing_active:
+                        log.warning(f"⚠️ [BILLING] Trial expirado ou sem pagamento para {user_email}")
+                        log.warning(f"⚠️ [BILLING] Mensagem salva, mas IA NÃO responderá")
+                        log.warning(f"⚠️ [BILLING] Instância: {instance_id}")
+                        # Mensagem foi salva, mas IA não processa
+                        return
+
+                    log.info(f"✅ [BILLING] Billing ativo para {user_email} - IA processa normalmente")
+
+                except Exception as e:
+                    # Se falhar verificação, permite por segurança
+                    log.error(f"❌ [BILLING] Erro ao verificar billing: {e}")
+                    log.warning(f"⚠️ [BILLING] Permitindo IA por segurança (falha na verificação)")
+
+            # Busca histórico (já inclui a mensagem atual salva acima)
+            history = await get_history(number, instance_id)
+            log.info(f"📜 [IA] Histórico: {len(history)} mensagens (incluindo mensagem atual)")
+
+            # Chama IA
+            log.info(f"🧠 [IA] Chamando OpenAI ({OPENAI_MODEL})...")
+            response = await call_openai(history, config["prompt"])
+
+            if not response:
+                log.error(f"❌ [IA] OpenAI falhou!")
+                return
+
+            log.info(f"✅ [IA] OpenAI respondeu")
+
+            # Processa tool calls (igual TypeScript - processa TODAS em sequência)
+            #
+            # Quando a IA retorna múltiplas chamadas de função (tool_calls), a ordem
+            # original pode colocar um handoff antes de um send_text ou send_menu.
+            # Isso resulta em o lead ser encaminhado para atendimento humano antes de
+            # receber a resposta automática, o que causa a sensação de que a IA não
+            # respondeu. Para garantir que as mensagens sejam enviadas antes do
+            # encaminhamento, reordenamos as chamadas: primeiro enviamos todos os
+            # textos e menus, por último executamos o handoff, se houver.
+            tool_calls = response.get("tool_calls", [])
+            if tool_calls:
+                log.info(f"🤖 [IA] {len(tool_calls)} função(ões) detectada(s)")
+
+                # Separar chamadas em dois grupos: não-handoff e handoff
+                non_handoff_calls = []
+                handoff_calls = []
+                for call in tool_calls:
+                    # Ignorar qualquer item que não seja uma chamada de função
+                    if call.type != "function":
+                        continue
+                    if call.function.name == "handoff":
+                        handoff_calls.append(call)
+                    else:
+                        non_handoff_calls.append(call)
+
+                # Processar primeiro textos e menus, depois handoff
+                ordered_calls = non_handoff_calls + handoff_calls
+
+                for call in ordered_calls:
+                    func_name = call.function.name
+                    func_args = json.loads(call.function.arguments or "{}")
+                    log.info(f"   🔧 Executando: {func_name}")
+
+                    if func_name == "send_text":
+                        msg = func_args.get("message", "")
+                        if msg:
+                            log.info(f"📤 [IA] Enviando: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
+                            await send_whatsapp_text(config["host"], config["token"], number, msg)
+                            await save_message(instance_id, number, msg, "out")
+
+                            # ✅ SALVA RESPOSTA DA IA NA MEMÓRIA
+                            await save_to_ai_memory(
+                                instance_id=instance_id,
+                                role="assistant",
+                                content=msg,
+                                metadata={"chat_id": number, "number": number, "function": "send_text"}
+                            )
+
+                            log.info(f"✅ [IA] Mensagem enviada com sucesso")
+                            await asyncio.sleep(0.5)
+
+                    elif func_name == "send_menu":
+                        # Menu com botões (igual TypeScript)
+                        menu_question = func_args.get("text", "")
+                        choices = func_args.get("choices", ["sim", "nao"])
+                        footer = func_args.get("footerText", "Escolha uma opção")
+
+                        if menu_question:
+                            # Por enquanto, envia como texto simples
+                            # TODO: Implementar botões nativos da UAZAPI
+                            menu_text = f"{menu_question}\n\n"
+                            for i, choice in enumerate(choices, 1):
+                                menu_text += f"{i}. {choice.upper()}\n"
+                            menu_text += f"\n{footer}"
+
+                            await send_whatsapp_text(config["host"], config["token"], number, menu_text)
+                            # Salva a PERGUNTA no histórico (não o texto formatado) para manter contexto
+                            await save_message(instance_id, number, menu_question, "out")
+
+                            # ✅ SALVA MENU NA MEMÓRIA
+                            await save_to_ai_memory(
+                                instance_id=instance_id,
+                                role="assistant",
+                                content=menu_text,
+                                metadata={"chat_id": number, "number": number, "function": "send_menu", "choices": choices}
+                            )
+
+                            log.info(f"   ✅ send_menu executado: {len(choices)} opções")
+                            await asyncio.sleep(0.5)
+
+                    elif func_name == "handoff":
+                        log.info(f"   🎯 HANDOFF detectado!")
+                        await handoff_to_human(number, config["host"], config["token"], config.get("redirect_phone", ""))
+                        await save_message(instance_id, number, "[handoff]", "out")
+                        log.info(f"   ✅ handoff executado")
+                        # Evita delay adicional após último handoff
+
+                    else:
+                        log.warning(f"   ❌ Função desconhecida: {func_name}")
+
+            # Se não tem tool calls, envia conteúdo direto
+            elif response.get("content"):
+                msg = response["content"].strip()
+                if msg:
+                    log.info(f"📤 [IA] Enviando resposta direta: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
+                    await send_whatsapp_text(config["host"], config["token"], number, msg)
+                    await save_message(instance_id, number, msg, "out")
+
+                    # ✅ SALVA RESPOSTA DIRETA NA MEMÓRIA
+                    await save_to_ai_memory(
+                        instance_id=instance_id,
+                        role="assistant",
+                        content=msg,
+                        metadata={"chat_id": number, "number": number, "function": "direct_response"}
+                    )
+
+                    log.info(f"✅ [IA] Mensagem enviada com sucesso")
+
+        except Exception as e:
+            log.error(f"❌ [IA] ERRO FATAL ao processar mensagem!")
+            log.error(f"   Tipo: {e.__class__.__name__}")
+            log.error(f"   Mensagem: {str(e)}")
+            import traceback
+            log.error(f"   Traceback completo:\n{traceback.format_exc()}")
+
+        # Lock é liberado automaticamente pelo async with
         log.info(f"🔓 [IA] Lock liberado para {number}")
 
 
