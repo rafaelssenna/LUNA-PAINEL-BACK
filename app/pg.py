@@ -18,7 +18,9 @@ def get_pool() -> ConnectionPool:
         size = int(os.getenv("PGPOOL_SIZE", "5"))
 
         def _configure(conn):
-            conn.autocommit = True
+            # ✅ CORREÇÃO: Autocommit desligado para permitir transações
+            # As rotas devem fazer commit() explicitamente
+            conn.autocommit = False
 
         _pool = ConnectionPool(
             conninfo=dsn,
@@ -32,6 +34,34 @@ def get_pool() -> ConnectionPool:
 # helper opcional (uso: with get_conn() as con: con.execute(...))
 def get_conn():
     return get_pool().connection()
+
+
+# ✅ CORREÇÃO: Helper para transações seguras com rollback automático
+from contextlib import contextmanager
+
+@contextmanager
+def safe_transaction():
+    """
+    Context manager para transações seguras com rollback automático em erro.
+
+    Uso:
+        with safe_transaction() as conn:
+            conn.execute(...)
+            # commit é feito automaticamente ao sair
+            # rollback é feito se houver exceção
+    """
+    pool = get_pool()
+    conn = pool.connection()
+    try:
+        with conn:
+            with conn.cursor() as cur:
+                yield conn, cur
+            conn.commit()
+    except Exception as e:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
 
 
 def init_schema():
@@ -511,3 +541,4 @@ def init_schema():
     """
     with get_pool().connection() as con:
         con.execute(sql)
+        con.commit()  # ✅ Necessário agora que autocommit=False
