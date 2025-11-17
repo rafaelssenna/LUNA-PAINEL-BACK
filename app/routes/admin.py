@@ -515,19 +515,19 @@ async def get_instance_details(
                     raise HTTPException(status_code=404, detail="Instância não encontrada")
                 
                 return {
-                    "id": row[0],
-                    "user_id": row[1],
-                    "phone_number": row[2],
-                    "status": row[3],
-                    "admin_status": row[4],
-                    "prompt": row[5],  # ✅ Prompt completo
-                    "redirect_phone": row[6],
-                    "admin_notes": row[7],
-                    "configured_at": row[8].isoformat() if row[8] else None,
-                    "created_at": row[9].isoformat() if row[9] else None,
-                    "updated_at": row[10].isoformat() if row[10] else None,
-                    "user_email": row[11],
-                    "user_name": row[12]
+                    "id": row["id"],
+                    "user_id": row["user_id"],
+                    "phone_number": row["phone_number"],
+                    "status": row["status"],
+                    "admin_status": row["admin_status"],
+                    "prompt": row["prompt"],
+                    "redirect_phone": row["redirect_phone"],
+                    "admin_notes": row["admin_notes"],
+                    "configured_at": row["configured_at"].isoformat() if row["configured_at"] else None,
+                    "created_at": row["created_at"].isoformat() if row["created_at"] else None,
+                    "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
+                    "user_email": row["user_email"],
+                    "user_name": row["user_name"]
                 }
     except HTTPException:
         raise
@@ -837,7 +837,7 @@ def _resolve_instance_id(instance_id: Optional[str], conn) -> str:
         row = cur.fetchone()
         if not row:
             raise HTTPException(status_code=404, detail="Nenhuma instância ativa encontrada")
-        return row[0]
+        return row["id"]
 
 
 @router.get("/instances/{instance_id}/queue")
@@ -885,21 +885,21 @@ async def get_instance_queue(
 
             cur.execute(
                 f"""
-                SELECT COUNT(*)
+                SELECT COUNT(*) as count
                   FROM instance_queue
                  WHERE instance_id = %s {where_clause}
                 """,
                 count_params,
             )
-            total = cur.fetchone()[0]
+            total = cur.fetchone()["count"]
 
         items = [
             {
-                "phone": row[0],
-                "name": row[1],
-                "niche": row[2],
-                "region": row[3],
-                "created_at": row[4].isoformat() if row[4] else None,
+                "phone": row["phone"],
+                "name": row["name"],
+                "niche": row["niche"],
+                "region": row["region"],
+                "created_at": row["created_at"].isoformat() if row["created_at"] else None,
             }
             for row in rows
         ]
@@ -1001,19 +1001,19 @@ async def get_instance_totals(
             rows = cur.fetchall()
 
             cur.execute(
-                f"SELECT COUNT(*) FROM instance_totals WHERE {where_clause}",
+                f"SELECT COUNT(*) as count FROM instance_totals WHERE {where_clause}",
                 params,
             )
-            total = cur.fetchone()[0]
+            total = cur.fetchone()["count"]
 
     items = [
         {
-            "phone": row[0],
-            "name": row[1],
-            "niche": row[2],
-            "region": row[3],
-            "mensagem_enviada": row[4],
-            "updated_at": row[5].isoformat() if row[5] else None,
+            "phone": row["phone"],
+            "name": row["name"],
+            "niche": row["niche"],
+            "region": row["region"],
+            "mensagem_enviada": row["mensagem_enviada"],
+            "updated_at": row["updated_at"].isoformat() if row["updated_at"] else None,
         }
         for row in rows
     ]
@@ -1054,7 +1054,7 @@ async def add_contact_to_instance(
                 """,
                 (instance_id, digits, payload.name, payload.niche, payload.region),
             )
-            already_sent = cur.fetchone()[0]
+            already_sent = cur.fetchone()["mensagem_enviada"]
 
             if already_sent:
                 status = "skipped_already_sent"
@@ -1143,7 +1143,7 @@ async def get_instance_progress(
                 """,
                 (resolved_id,),
             )
-            row = cur.fetchone() or (0, 0)
+            row = cur.fetchone()
 
             cur.execute(
                 """
@@ -1153,7 +1153,8 @@ async def get_instance_progress(
                 """,
                 (resolved_id,),
             )
-            sent_today = cur.fetchone()[0] or 0
+            sent_today_row = cur.fetchone()
+            sent_today = sent_today_row["sent_today"] if sent_today_row and sent_today_row["sent_today"] is not None else 0
 
             cur.execute(
                 "SELECT daily_limit, auto_run, ia_auto, message_template FROM instance_settings WHERE instance_id = %s",
@@ -1161,9 +1162,9 @@ async def get_instance_progress(
             )
             settings = cur.fetchone()
 
-    total_enviados = row[0] if row else 0
-    pendentes = row[1] if row else 0
-    daily_limit = settings[0] if settings else DEFAULT_DAILY_LIMIT
+    total_enviados = row["enviados"] if row else 0
+    pendentes = row["pendentes"] if row else 0
+    daily_limit = settings["daily_limit"] if settings else DEFAULT_DAILY_LIMIT
 
     remaining = max(0, daily_limit - sent_today)
     pct = min(100, int((sent_today / daily_limit) * 100)) if daily_limit > 0 else 0
@@ -1176,9 +1177,9 @@ async def get_instance_progress(
         "daily_limit": daily_limit,
         "remaining": remaining,
         "percentage": pct,
-        "auto_run": settings[1] if settings else False,
-        "ia_auto": settings[2] if settings else False,
-        "message_template": settings[3] if settings else "",
+        "auto_run": settings["auto_run"] if settings else False,
+        "ia_auto": settings["ia_auto"] if settings else False,
+        "message_template": settings["message_template"] if settings else "",
         "now": datetime.now(timezone.utc).isoformat(),
     }
 
