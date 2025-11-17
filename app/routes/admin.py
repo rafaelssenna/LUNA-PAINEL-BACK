@@ -1474,62 +1474,81 @@ async def get_instance_chats(
     Retorna informações dos chats armazenados localmente no banco.
     """
 
-    with get_pool().connection() as conn:
-        _ensure_instance_exists(conn, instance_id)
+    log.info(f"[CONVERSAS] 🔵 GET /instances/{instance_id}/chats - Admin: {admin.get('email')}")
 
-        with conn.cursor() as cur:
-            # Buscar chats distintos com última mensagem
-            cur.execute("""
-                SELECT
-                    m.chat_id,
-                    MAX(m.timestamp) as last_timestamp,
-                    (
-                        SELECT content
-                        FROM messages m2
-                        WHERE m2.chat_id = m.chat_id
-                        AND m2.instance_id = m.instance_id
-                        ORDER BY m2.timestamp DESC
-                        LIMIT 1
-                    ) as last_message,
-                    (
-                        SELECT from_me
-                        FROM messages m2
-                        WHERE m2.chat_id = m.chat_id
-                        AND m2.instance_id = m.instance_id
-                        ORDER BY m2.timestamp DESC
-                        LIMIT 1
-                    ) as last_from_me,
-                    COUNT(*) as message_count
-                FROM messages m
-                WHERE m.instance_id = %s
-                GROUP BY m.chat_id
-                ORDER BY MAX(m.timestamp) DESC
-                LIMIT 100
-            """, (instance_id,))
+    try:
+        with get_pool().connection() as conn:
+            log.info(f"[CONVERSAS] ✅ Conexão com banco OK")
 
-            rows = cur.fetchall()
+            _ensure_instance_exists(conn, instance_id)
+            log.info(f"[CONVERSAS] ✅ Instância {instance_id} existe")
 
-            chats = []
-            for row in rows:
-                # Extract phone number from chat_id (format: "5511999998888@c.us")
-                chat_id = row[0]
-                phone = chat_id.split('@')[0] if '@' in chat_id else chat_id
+            with conn.cursor() as cur:
+                # Buscar chats distintos com última mensagem
+                log.info(f"[CONVERSAS] 🔍 Executando query SQL...")
+                cur.execute("""
+                    SELECT
+                        m.chat_id,
+                        MAX(m.timestamp) as last_timestamp,
+                        (
+                            SELECT content
+                            FROM messages m2
+                            WHERE m2.chat_id = m.chat_id
+                            AND m2.instance_id = m.instance_id
+                            ORDER BY m2.timestamp DESC
+                            LIMIT 1
+                        ) as last_message,
+                        (
+                            SELECT from_me
+                            FROM messages m2
+                            WHERE m2.chat_id = m.chat_id
+                            AND m2.instance_id = m.instance_id
+                            ORDER BY m2.timestamp DESC
+                            LIMIT 1
+                        ) as last_from_me,
+                        COUNT(*) as message_count
+                    FROM messages m
+                    WHERE m.instance_id = %s
+                    GROUP BY m.chat_id
+                    ORDER BY MAX(m.timestamp) DESC
+                    LIMIT 100
+                """, (instance_id,))
 
-                # Simple name extraction (you can enhance this by querying a contacts table)
-                name = phone  # Default to phone number
+                rows = cur.fetchall()
+                log.info(f"[CONVERSAS] ✅ Query executada. Rows: {len(rows)}")
 
-                chats.append({
-                    "_chatId": chat_id,
-                    "lead_name": name,
-                    "wa_lastMessageTextVote": row[2] or "",
-                    "wa_lastMsgPreview": (row[2] or "")[:100],
-                    "phone": phone,
-                    "last_timestamp": int(row[1]) if row[1] else 0,
-                    "last_from_me": bool(row[3]),
-                    "message_count": row[4]
-                })
+                chats = []
+                for i, row in enumerate(rows):
+                    log.debug(f"[CONVERSAS] Processando row {i+1}/{len(rows)}: {row}")
 
-            return {"items": chats, "total": len(chats)}
+                    # Extract phone number from chat_id (format: "5511999998888@c.us")
+                    chat_id = row[0]
+                    phone = chat_id.split('@')[0] if '@' in chat_id else chat_id
+
+                    # Simple name extraction (you can enhance this by querying a contacts table)
+                    name = phone  # Default to phone number
+
+                    chats.append({
+                        "_chatId": chat_id,
+                        "lead_name": name,
+                        "wa_lastMessageTextVote": row[2] or "",
+                        "wa_lastMsgPreview": (row[2] or "")[:100],
+                        "phone": phone,
+                        "last_timestamp": int(row[1]) if row[1] else 0,
+                        "last_from_me": bool(row[3]),
+                        "message_count": row[4]
+                    })
+
+                log.info(f"[CONVERSAS] ✅ {len(chats)} chats processados com sucesso")
+                return {"items": chats, "total": len(chats)}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"[CONVERSAS] ❌ Erro inesperado: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar conversas: {str(e)}")
 
 
 @router.post("/instances/{instance_id}/messages")
