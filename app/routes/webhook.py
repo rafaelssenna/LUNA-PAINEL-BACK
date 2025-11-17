@@ -745,8 +745,14 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         return {"ok": True, "ignored": "no_number"}
     
     if from_me:
-        log.info("ℹ️ [WEBHOOK] Mensagem enviada por mim (from_me=True). Ignorando.")
-        return {"ok": True, "ignored": "from_me"}
+        log.info("ℹ️ [WEBHOOK] Mensagem enviada por mim (from_me=True). Salvando como 'out'.")
+        # ✅ SALVAR MENSAGEM ENVIADA MANUALMENTE (não pela IA)
+        try:
+            await save_message(instance_id, number, text, "out")
+            log.info(f"✅ [WEBHOOK] Mensagem 'out' salva: {number}")
+        except Exception as e:
+            log.error(f"❌ [WEBHOOK] Erro ao salvar mensagem 'out': {e}")
+        return {"ok": True, "saved": "from_me"}
     
     if not text:
         log.warning("⚠️ [WEBHOOK] Texto vazio! Ignorando.")
