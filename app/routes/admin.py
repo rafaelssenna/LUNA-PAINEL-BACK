@@ -437,11 +437,11 @@ async def configure_instance(
                 log.info(f"   - Prompt: {len(body.prompt)} caracteres")
                 log.info(f"   - Redirect Phone: {body.redirect_phone}")
                 log.info(f"   - Admin Status: active")
-                
+
                 # Atualizar instância - setar como 'active' para permitir que IA responda imediatamente
                 cur.execute("""
                     UPDATE instances
-                    SET 
+                    SET
                         admin_status = 'active',
                         configured_by = %s,
                         configured_at = NOW(),
@@ -452,7 +452,19 @@ async def configure_instance(
                         updated_at = NOW()
                     WHERE id = %s
                 """, (admin_id, body.prompt, body.notes, prompt_history_json, body.redirect_phone, instance_id))
-                
+
+                # ✅ TAMBÉM atualizar instance_settings para manter redirect_phone sincronizado
+                cur.execute("""
+                    INSERT INTO instance_settings (instance_id, redirect_phone, updated_at)
+                    VALUES (%s, %s, NOW())
+                    ON CONFLICT (instance_id)
+                    DO UPDATE SET
+                        redirect_phone = EXCLUDED.redirect_phone,
+                        updated_at = NOW()
+                """, (instance_id, body.redirect_phone))
+
+                log.info(f"✅ [CONFIGURE] redirect_phone sincronizado em ambas as tabelas: '{body.redirect_phone}'")
+
                 # Registrar ação
                 cur.execute("""
                     INSERT INTO admin_actions (admin_id, action_type, target_type, target_id, description)
@@ -486,12 +498,12 @@ async def get_instance_details(
     admin: Dict = Depends(get_current_admin)
 ):
     """Buscar detalhes completos de uma instância (incluindo prompt)"""
-    
+
     try:
         with get_pool().connection() as conn:
             with conn.cursor() as cur:
                 cur.execute("""
-                    SELECT 
+                    SELECT
                         i.id,
                         i.user_id,
                         i.phone_number,
@@ -509,12 +521,15 @@ async def get_instance_details(
                     LEFT JOIN users u ON i.user_id = u.id
                     WHERE i.id = %s
                 """, (instance_id,))
-                
+
                 row = cur.fetchone()
-                
+
                 if not row:
                     raise HTTPException(status_code=404, detail="Instância não encontrada")
-                
+
+                log.info(f"📥 [GET INSTANCE] Carregando instância {instance_id}")
+                log.info(f"   redirect_phone no banco: '{row['redirect_phone']}'")
+
                 return {
                     "id": row["id"],
                     "user_id": row["user_id"],
@@ -1192,6 +1207,9 @@ async def update_instance_settings(
     payload: AutomationSettingsIn,
     admin: Dict = Depends(get_current_admin)
 ):
+    log.info(f"🔧 [SETTINGS] Salvando configurações para instância {instance_id}")
+    log.info(f"   redirect_phone recebido: '{payload.redirect_phone}'")
+
     if payload.daily_limit <= 0:
         raise HTTPException(status_code=400, detail="daily_limit deve ser maior que zero")
 
@@ -1209,6 +1227,8 @@ async def update_instance_settings(
             if payload.message_template:
                 stripped = payload.message_template.strip()
                 message_template_value = stripped if stripped else None
+
+            log.info(f"   redirect_phone_value normalizado: '{redirect_phone_value}'")
 
             # Atualizar instance_settings
             cur.execute(
@@ -1243,6 +1263,10 @@ async def update_instance_settings(
                 """,
                 (redirect_phone_value, instance_id)
             )
+
+            log.info(f"✅ [SETTINGS] Configurações salvas:")
+            log.info(f"   - instance_settings.redirect_phone = '{redirect_phone_value}'")
+            log.info(f"   - instances.redirect_phone = '{redirect_phone_value}'")
 
         conn.commit()  # ✅ Necessário com autocommit=False
 
