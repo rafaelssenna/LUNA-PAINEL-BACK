@@ -327,6 +327,12 @@ async def save_message(instance_id: str, chatid: str, text: str, direction: str)
 
 async def send_whatsapp_text(host: str, token: str, number: str, text: str) -> bool:
     """Envia mensagem de texto via UAZAPI"""
+    log.info(f"📤 [UAZAPI] INICIANDO envio de mensagem")
+    log.info(f"📤 [UAZAPI] Host: {host}")
+    log.info(f"📤 [UAZAPI] Token: {token[:20] if token else 'NONE'}...")
+    log.info(f"📤 [UAZAPI] Number: {number}")
+    log.info(f"📤 [UAZAPI] Text: {text[:100]}...")
+
     try:
         url = f"https://{host}/send/text"
         headers = {"token": token, "Content-Type": "application/json"}
@@ -335,13 +341,22 @@ async def send_whatsapp_text(host: str, token: str, number: str, text: str) -> b
             "text": text,
             "delay": int((MIN_TYPING_DELAY + MAX_TYPING_DELAY) / 2 * 1000)
         }
-        
+
+        log.info(f"📤 [UAZAPI] URL: {url}")
+        log.info(f"📤 [UAZAPI] Payload: {payload}")
+
         async with httpx.AsyncClient(timeout=20) as client:
+            log.info(f"📤 [UAZAPI] Fazendo POST request...")
             resp = await client.post(url, json=payload, headers=headers)
+            log.info(f"📤 [UAZAPI] Status Code: {resp.status_code}")
+            log.info(f"📤 [UAZAPI] Response: {resp.text[:200]}...")
             resp.raise_for_status()
+            log.info(f"✅ [UAZAPI] Mensagem enviada com sucesso!")
             return True
     except Exception as e:
-        log.error(f"Erro ao enviar mensagem: {e}")
+        log.error(f"❌ [UAZAPI] Erro ao enviar mensagem: {e}")
+        import traceback
+        log.error(f"❌ [UAZAPI] Traceback: {traceback.format_exc()}")
         return False
 
 
@@ -541,6 +556,8 @@ async def process_message(instance_id: str, number: str, text: str):
                 return
 
             log.info(f"✅ [IA] OpenAI respondeu")
+            log.info(f"🔍 [IA] Resposta completa: {response}")
+            log.info(f"🔍 [IA] Config disponível: host={config.get('host')}, token={config.get('token')[:20] if config.get('token') else 'NONE'}...")
 
             # Processa tool calls (igual TypeScript - processa TODAS em sequência)
             #
@@ -579,6 +596,7 @@ async def process_message(instance_id: str, number: str, text: str):
                         msg = func_args.get("message", "")
                         if msg:
                             log.info(f"📤 [IA] Enviando: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
+                            log.info(f"🔧 [IA→UAZAPI] Chamando send_whatsapp_text com config: host={config.get('host')}, token={config.get('token')[:20] if config.get('token') else 'NONE'}..., number={number}")
                             await send_whatsapp_text(config["host"], config["token"], number, msg)
                             await save_message(instance_id, number, msg, "out")
 
@@ -607,6 +625,7 @@ async def process_message(instance_id: str, number: str, text: str):
                                 menu_text += f"{i}. {choice.upper()}\n"
                             menu_text += f"\n{footer}"
 
+                            log.info(f"🔧 [IA→UAZAPI] Chamando send_whatsapp_text (menu) com config: host={config.get('host')}, token={config.get('token')[:20] if config.get('token') else 'NONE'}..., number={number}")
                             await send_whatsapp_text(config["host"], config["token"], number, menu_text)
                             # Salva a PERGUNTA no histórico (não o texto formatado) para manter contexto
                             await save_message(instance_id, number, menu_question, "out")
@@ -637,6 +656,7 @@ async def process_message(instance_id: str, number: str, text: str):
                 msg = response["content"].strip()
                 if msg:
                     log.info(f"📤 [IA] Enviando resposta direta: \"{msg[:100]}{'...' if len(msg) > 100 else ''}\"")
+                    log.info(f"🔧 [IA→UAZAPI] Chamando send_whatsapp_text (direto) com config: host={config.get('host')}, token={config.get('token')[:20] if config.get('token') else 'NONE'}..., number={number}")
                     await send_whatsapp_text(config["host"], config["token"], number, msg)
                     await save_message(instance_id, number, msg, "out")
 
