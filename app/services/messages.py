@@ -141,12 +141,12 @@ async def bulk_upsert_messages(
 
     sql = """
     INSERT INTO messages
-      (instance_id, chatid, msgid, from_me, ts, text, media_url, media_mime)
+      (instance_id, chat_id, message_id, from_me, timestamp, content, media_url, media_mime)
     VALUES %s
-    ON CONFLICT (instance_id, chatid, msgid) DO UPDATE
+    ON CONFLICT (instance_id, chat_id, message_id) DO UPDATE
       SET from_me   = EXCLUDED.from_me,
-          ts        = GREATEST(messages.ts, EXCLUDED.ts),
-          text      = COALESCE(EXCLUDED.text, messages.text),
+          timestamp = GREATEST(messages.timestamp, EXCLUDED.timestamp),
+          content   = COALESCE(EXCLUDED.content, messages.content),
           media_url = COALESCE(EXCLUDED.media_url, messages.media_url),
           media_mime= COALESCE(EXCLUDED.media_mime, messages.media_mime);
     """
