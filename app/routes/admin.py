@@ -59,6 +59,7 @@ class AutomationSettingsIn(BaseModel):
     auto_run: bool = False
     ia_auto: bool = False
     message_template: Optional[str] = None
+    redirect_phone: Optional[str] = None
 
 # ==============================================================================
 # HELPERS
@@ -1157,7 +1158,7 @@ async def get_instance_progress(
             sent_today = sent_today_row["sent_today"] if sent_today_row and sent_today_row["sent_today"] is not None else 0
 
             cur.execute(
-                "SELECT daily_limit, auto_run, ia_auto, message_template FROM instance_settings WHERE instance_id = %s",
+                "SELECT daily_limit, auto_run, ia_auto, message_template, redirect_phone FROM instance_settings WHERE instance_id = %s",
                 (resolved_id,),
             )
             settings = cur.fetchone()
@@ -1180,6 +1181,7 @@ async def get_instance_progress(
         "auto_run": settings["auto_run"] if settings else False,
         "ia_auto": settings["ia_auto"] if settings else False,
         "message_template": settings["message_template"] if settings else "",
+        "redirect_phone": settings["redirect_phone"] if settings else "",
         "now": datetime.now(timezone.utc).isoformat(),
     }
 
@@ -1197,16 +1199,18 @@ async def update_instance_settings(
         _ensure_instance_exists(conn, instance_id)
 
         with conn.cursor() as cur:
+            # Atualizar instance_settings
             cur.execute(
                 """
-                INSERT INTO instance_settings (instance_id, daily_limit, auto_run, ia_auto, message_template, updated_at)
-                VALUES (%s, %s, %s, %s, %s, NOW())
+                INSERT INTO instance_settings (instance_id, daily_limit, auto_run, ia_auto, message_template, redirect_phone, updated_at)
+                VALUES (%s, %s, %s, %s, %s, %s, NOW())
                 ON CONFLICT (instance_id)
                 DO UPDATE SET
                     daily_limit = EXCLUDED.daily_limit,
                     auto_run = EXCLUDED.auto_run,
                     ia_auto = EXCLUDED.ia_auto,
                     message_template = EXCLUDED.message_template,
+                    redirect_phone = EXCLUDED.redirect_phone,
                     updated_at = NOW()
                 """,
                 (
@@ -1215,8 +1219,20 @@ async def update_instance_settings(
                     payload.auto_run,
                     payload.ia_auto,
                     payload.message_template or None,
+                    payload.redirect_phone or None,
                 ),
             )
+
+            # TAMBÉM atualizar instances.redirect_phone para manter sincronizado
+            if payload.redirect_phone is not None:
+                cur.execute(
+                    """
+                    UPDATE instances
+                    SET redirect_phone = %s, updated_at = NOW()
+                    WHERE id = %s
+                    """,
+                    (payload.redirect_phone, instance_id)
+                )
 
         conn.commit()  # ✅ Necessário com autocommit=False
 
