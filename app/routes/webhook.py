@@ -673,20 +673,30 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         log.error(f"❌ [WEBHOOK] Erro ao parsear JSON: {e}")
         data = {}
 
-    # 🔍 LOG COMPLETO DO PAYLOAD (para debug)
-    log.info(f"📦 [WEBHOOK] Payload completo (primeiras chaves): {list(data.keys())}")
-    log.info(f"📦 [WEBHOOK] instance_id no payload? {data.get('instance_id') or data.get('instanceId') or data.get('instance')}")
+    # 🔍 Verificar se é webhook de mensagem ou de status
+    event_type = data.get("event") or data.get("EventType") or data.get("type")
+    log.info(f"📦 [WEBHOOK] Tipo de evento: {event_type}")
+
+    # Ignorar webhooks que não são mensagens
+    if event_type not in ["message", "messages.upsert", None]:
+        log.info(f"ℹ️ [WEBHOOK] Ignorando webhook de tipo: {event_type}")
+        return {"ok": True, "ignored": f"event_type_{event_type}"}
+
+    # Extrai instance_id do payload (UAZAPI envia como "instanceName")
+    instance_name = data.get("instanceName") or data.get("instance_name")
 
     # Extrai dados
     # UAZAPI envia "owner" que é o telefone da instância
     chat = data.get("chat", {})
     owner = chat.get("owner")  # Telefone da instância (ex: 553188379840)
 
-    log.info(f"🔍 [WEBHOOK] Owner extraído do payload: {owner}")
-    
-    # Buscar instância pelo owner (phone_number)
-    instance_id = None
-    if owner:
+    log.info(f"🔍 [WEBHOOK] instanceName: {instance_name}, Owner: {owner}")
+
+    # Tentar usar instanceName primeiro (mais direto)
+    instance_id = instance_name
+
+    # Se não tiver instanceName, buscar pelo owner (phone_number)
+    if not instance_id and owner:
         try:
             pool = get_pool()
             with pool.connection() as conn:
