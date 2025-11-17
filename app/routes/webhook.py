@@ -673,6 +673,10 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         log.error(f"❌ [WEBHOOK] Erro ao parsear JSON: {e}")
         data = {}
 
+    # 🔍 DEBUG: Log do payload completo
+    import json
+    log.info(f"📦 [WEBHOOK] PAYLOAD COMPLETO: {json.dumps(data, indent=2, default=str)[:500]}...")
+
     # Extrai dados
     # UAZAPI envia "owner" que é o telefone da instância
     chat = data.get("chat", {})
@@ -728,7 +732,13 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
             log.error(traceback.format_exc())
     else:
         log.error(f"❌ [WEBHOOK] Owner não encontrado no payload!")
-    
+
+    # ✅ FALLBACK: Se não achou por owner, tenta extrair instance_id direto do payload
+    if not instance_id:
+        instance_id = data.get("instance_id") or data.get("instanceId") or data.get("instance")
+        if instance_id:
+            log.info(f"✅ [WEBHOOK] instance_id extraído direto do payload: {instance_id}")
+
     number = extract_number(data)
     text = extract_text(data)
     from_me = data.get("fromMe", False)
