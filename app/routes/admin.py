@@ -1609,25 +1609,24 @@ async def get_instance_messages(
 
             messages = []
             for row in rows:
-                # 🔍 DEBUG: Verificar estrutura do row
-                log.info(f"[ADMIN] Row do banco: type={type(row)} | keys={list(row.keys()) if hasattr(row, 'keys') else 'N/A'}")
-                log.info(f"[ADMIN] Row completo: {dict(row) if hasattr(row, 'keys') else row}")
-
-                # IMPORTANTE: row é um DICT, não tupla (por causa do row_factory=dict_row)
-                from_me_val = row.get("from_me", False) if hasattr(row, 'get') else row[1]
-                content_val = row.get("content", "") if hasattr(row, 'get') else row[0]
+                # IMPORTANTE: row é um DICT (row_factory=dict_row)
+                from_me_val = row["from_me"]  # ✅ Acesso direto
+                content_val = row["content"]
+                timestamp_val = row["timestamp"]
+                media_type_val = row["media_type"]
+                media_url_val = row["media_url"]
 
                 msg_obj = {
                     "text": content_val or "",
-                    "fromMe": bool(from_me_val),
-                    "messageTimestamp": int(row["timestamp"]) if row.get("timestamp") else 0,
-                    "type": row.get("media_type") or "text",
-                    "mediaUrl": row.get("media_url")
+                    "fromMe": bool(from_me_val),  # ✅ Conversão snake_case → camelCase
+                    "messageTimestamp": int(timestamp_val) if timestamp_val else 0,
+                    "type": media_type_val or "text",
+                    "mediaUrl": media_url_val
                 }
                 messages.append(msg_obj)
 
                 # 🔍 LOG DEBUG
-                log.info(f"[ADMIN] ✅ Mensagem processada: from_me={from_me_val} → fromMe={msg_obj['fromMe']} | texto={(content_val or '')[:30]}")
+                log.info(f"[ADMIN] ✅ from_me={from_me_val} → fromMe={msg_obj['fromMe']} | texto={(content_val or '')[:30]}")
 
             log.info(f"[ADMIN] 📤 Retornando {len(messages)} mensagens para chat {chat_id}")
             return {"items": messages, "total": len(messages)}
