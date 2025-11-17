@@ -1526,8 +1526,28 @@ async def get_instance_chats(
                     chat_id = row["chat_id"]
                     phone = chat_id.split('@')[0] if '@' in chat_id else chat_id
 
-                    # Simple name extraction (you can enhance this by querying a contacts table)
-                    name = phone  # Default to phone number
+                    # Formatar nome amigável para exibição
+                    def format_phone_display(phone_num):
+                        """Formata número de telefone para exibição amigável"""
+                        # Remove caracteres não numéricos
+                        cleaned = ''.join(filter(str.isdigit, phone_num))
+
+                        # Formato brasileiro: +55 (XX) XXXXX-XXXX
+                        if len(cleaned) >= 12:
+                            country = cleaned[:2]
+                            ddd = cleaned[2:4]
+                            if len(cleaned) == 13:  # Com 9 dígitos
+                                number = f"{cleaned[4:9]}-{cleaned[9:13]}"
+                            elif len(cleaned) == 12:  # 8 dígitos
+                                number = f"{cleaned[4:8]}-{cleaned[8:12]}"
+                            else:
+                                number = cleaned[4:]
+                            return f"+{country} ({ddd}) {number}"
+
+                        # Fallback: retorna "Cliente" + número limpo
+                        return f"Cliente {phone_num}"
+
+                    name = format_phone_display(phone)
 
                     chats.append({
                         "_chatId": chat_id,
