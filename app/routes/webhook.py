@@ -416,7 +416,12 @@ async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Opti
     
     try:
         messages = [{"role": "system", "content": system_prompt}] + history
-        
+
+        log.info(f"🧠 [OPENAI] Enviando request:")
+        log.info(f"🧠 [OPENAI] Model: {OPENAI_MODEL}")
+        log.info(f"🧠 [OPENAI] Messages count: {len(messages)}")
+        log.info(f"🧠 [OPENAI] Tools count: {len(tools)}")
+
         response = await openai_client.chat.completions.create(
             model=OPENAI_MODEL,
             messages=messages,
@@ -424,14 +429,28 @@ async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Opti
             tool_choice="auto",
             max_completion_tokens=500  # ✅ GPT-5 usa max_completion_tokens
         )
-        
+
+        log.info(f"🧠 [OPENAI] Response recebida!")
+        log.info(f"🧠 [OPENAI] Response completo: {response}")
+        log.info(f"🧠 [OPENAI] Response.model_dump(): {response.model_dump()}")
+
         choice = response.choices[0].message
-        return {
+        log.info(f"🧠 [OPENAI] Choice: {choice}")
+        log.info(f"🧠 [OPENAI] Choice.content: '{choice.content}'")
+        log.info(f"🧠 [OPENAI] Choice.tool_calls: {choice.tool_calls}")
+        log.info(f"🧠 [OPENAI] Choice.role: {choice.role}")
+
+        result = {
             "content": choice.content,
             "tool_calls": choice.tool_calls
         }
+        log.info(f"🧠 [OPENAI] Retornando: {result}")
+
+        return result
     except Exception as e:
-        log.error(f"Erro OpenAI: {e}")
+        log.error(f"❌ [OPENAI] Erro: {e}")
+        import traceback
+        log.error(f"❌ [OPENAI] Traceback: {traceback.format_exc()}")
         return None
 
 
@@ -552,12 +571,24 @@ async def process_message(instance_id: str, number: str, text: str):
             response = await call_openai(history, config["prompt"])
 
             if not response:
-                log.error(f"❌ [IA] OpenAI falhou!")
+                log.error(f"❌ [IA] OpenAI falhou (retornou None)!")
                 return
 
             log.info(f"✅ [IA] OpenAI respondeu")
             log.info(f"🔍 [IA] Resposta completa: {response}")
             log.info(f"🔍 [IA] Config disponível: host={config.get('host')}, token={config.get('token')[:20] if config.get('token') else 'NONE'}...")
+
+            # Verificar se resposta está vazia
+            has_content = bool(response.get("content") and response.get("content").strip())
+            has_tool_calls = bool(response.get("tool_calls"))
+
+            log.info(f"🔍 [IA] Has content: {has_content}")
+            log.info(f"🔍 [IA] Has tool_calls: {has_tool_calls}")
+
+            if not has_content and not has_tool_calls:
+                log.error(f"❌ [IA] OpenAI retornou resposta VAZIA (sem content e sem tool_calls)!")
+                log.error(f"❌ [IA] Isso pode indicar problema com créditos da API ou com o modelo")
+                return
 
             # Processa tool calls (igual TypeScript - processa TODAS em sequência)
             #
