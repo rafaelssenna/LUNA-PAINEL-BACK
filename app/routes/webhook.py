@@ -407,7 +407,7 @@ async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Opti
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            max_tokens=500
+            max_completion_tokens=500  # ✅ GPT-5 usa max_completion_tokens
         )
         
         choice = response.choices[0].message
