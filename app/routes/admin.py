@@ -1522,7 +1522,8 @@ async def get_instance_chats(
                     log.debug(f"[CONVERSAS] Processando row {i+1}/{len(rows)}: {row}")
 
                     # Extract phone number from chat_id (format: "5511999998888@c.us")
-                    chat_id = row[0]
+                    # IMPORTANTE: row é um DICT, não tupla (por causa do row_factory=dict_row)
+                    chat_id = row["chat_id"]
                     phone = chat_id.split('@')[0] if '@' in chat_id else chat_id
 
                     # Simple name extraction (you can enhance this by querying a contacts table)
@@ -1531,12 +1532,12 @@ async def get_instance_chats(
                     chats.append({
                         "_chatId": chat_id,
                         "lead_name": name,
-                        "wa_lastMessageTextVote": row[2] or "",
-                        "wa_lastMsgPreview": (row[2] or "")[:100],
+                        "wa_lastMessageTextVote": row.get("last_message") or "",
+                        "wa_lastMsgPreview": (row.get("last_message") or "")[:100],
                         "phone": phone,
-                        "last_timestamp": int(row[1]) if row[1] else 0,
-                        "last_from_me": bool(row[3]),
-                        "message_count": row[4]
+                        "last_timestamp": int(row["last_timestamp"]) if row.get("last_timestamp") else 0,
+                        "last_from_me": bool(row.get("last_from_me", False)),
+                        "message_count": row.get("message_count", 0)
                     })
 
                 log.info(f"[CONVERSAS] ✅ {len(chats)} chats processados com sucesso")
@@ -1588,12 +1589,13 @@ async def get_instance_messages(
 
             messages = []
             for row in rows:
+                # IMPORTANTE: row é um DICT, não tupla (por causa do row_factory=dict_row)
                 messages.append({
-                    "text": row[0] or "",
-                    "fromMe": bool(row[1]),
-                    "messageTimestamp": int(row[2]) if row[2] else 0,
-                    "type": row[3] or "text",
-                    "mediaUrl": row[4]
+                    "text": row.get("content") or "",
+                    "fromMe": bool(row.get("from_me", False)),
+                    "messageTimestamp": int(row["timestamp"]) if row.get("timestamp") else 0,
+                    "type": row.get("media_type") or "text",
+                    "mediaUrl": row.get("media_url")
                 })
 
             return {"items": messages, "total": len(messages)}
@@ -1641,9 +1643,18 @@ async def export_chat_analysis(
         # Formatar mensagens para análise
         conversation_text = ""
         for row in rows:
-            sender = "Atendente" if row[1] else lead_name
-            message = row[0] or ""
-            timestamp = datetime.fromtimestamp(int(row[2])).strftime("%Y-%m-%d %H:%M:%S") if row[2] else ""
+            # IMPORTANTE: row é um DICT, não tupla (por causa do row_factory=dict_row)
+            sender = "Atendente" if row.get("from_me") else lead_name
+            message = row.get("content") or ""
+            timestamp_val = row.get("timestamp")
+            if timestamp_val:
+                # timestamp pode estar em millisegundos
+                ts = int(timestamp_val)
+                if ts > 10000000000:  # Está em millisegundos
+                    ts = ts // 1000
+                timestamp = datetime.fromtimestamp(ts).strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                timestamp = ""
             conversation_text += f"[{timestamp}] {sender}: {message}\n"
 
         # Gerar análise com OpenAI
