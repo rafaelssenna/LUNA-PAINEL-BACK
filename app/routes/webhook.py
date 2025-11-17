@@ -427,7 +427,7 @@ async def call_openai(history: List[Dict[str, str]], system_prompt: str) -> Opti
             messages=messages,
             tools=tools,
             tool_choice="auto",
-            max_completion_tokens=500  # ✅ GPT-5 usa max_completion_tokens
+            max_completion_tokens=3000  # ✅ GPT-5 mini precisa de mais tokens (usa reasoning_tokens internos)
         )
 
         log.info(f"🧠 [OPENAI] Response recebida!")
