@@ -11,8 +11,10 @@ import csv
 import io
 import re
 
-from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File
+from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel, EmailStr
+import httpx
+import asyncio
 
 from app.pg import get_pool
 from app.services import uazapi
@@ -1796,3 +1798,274 @@ Conversa:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao gerar análise: {str(e)}")
+
+
+# =========================================
+# AUTOMAÇÃO - EXECUÇÃO DO LOOP
+# =========================================
+
+# Controle de loops em execução
+running_automations = {}  # {instance_id: {"task": asyncio.Task, "stop_requested": bool}}
+
+@router.get("/instances/{instance_id}/automation-state")
+async def get_automation_state(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Verificar estado atual da automação"""
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            # Buscar configurações
+            cur.execute("""
+                SELECT daily_limit, auto_run, ia_auto
+                FROM instance_settings
+                WHERE instance_id = %s
+            """, (instance_id,))
+
+            settings_row = cur.fetchone()
+            if not settings_row:
+                daily_limit = 30
+            else:
+                daily_limit = settings_row['daily_limit']
+
+            # Contar enviados hoje
+            cur.execute("""
+                SELECT COUNT(*) as count
+                FROM instance_totals
+                WHERE instance_id = %s
+                  AND mensagem_enviada = true
+                  AND updated_at::date = CURRENT_DATE
+            """, (instance_id,))
+
+            sent_today = cur.fetchone()['count']
+            remaining_today = max(0, daily_limit - sent_today)
+
+            # Verificar se está rodando
+            is_running = instance_id in running_automations
+
+            return {
+                "loop_status": "running" if is_running else "idle",
+                "sent_today": sent_today,
+                "cap": daily_limit,
+                "remaining_today": remaining_today,
+                "actually_running": is_running,
+                "now": datetime.now(timezone.utc).isoformat()
+            }
+
+
+@router.post("/instances/{instance_id}/run-automation")
+async def run_automation(
+    instance_id: str,
+    background_tasks: BackgroundTasks,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Executar loop de automação"""
+
+    if instance_id in running_automations:
+        raise HTTPException(status_code=409, detail="Automação já está em execução")
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+    # Iniciar automação em background
+    background_tasks.add_task(_run_automation_loop, instance_id)
+
+    return {"ok": True, "message": "Automação iniciada"}
+
+
+@router.post("/instances/{instance_id}/stop-automation")
+async def stop_automation(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Parar loop de automação em execução"""
+
+    if instance_id not in running_automations:
+        raise HTTPException(status_code=404, detail="Nenhuma automação em execução")
+
+    # Marcar para parar
+    running_automations[instance_id]["stop_requested"] = True
+
+    return {"ok": True, "message": "Parada solicitada"}
+
+
+# =========================================
+# LÓGICA DE AUTOMAÇÃO
+# =========================================
+
+async def _run_automation_loop(instance_id: str):
+    """Loop principal de automação"""
+    log.info(f"🤖 [AUTOMATION] Iniciando loop para instância {instance_id}")
+
+    # Registrar que está rodando
+    running_automations[instance_id] = {
+        "task": asyncio.current_task(),
+        "stop_requested": False
+    }
+
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar configurações
+                cur.execute("""
+                    SELECT
+                        s.daily_limit,
+                        s.ia_auto,
+                        s.message_template,
+                        i.instance_url,
+                        i.instance_token
+                    FROM instance_settings s
+                    JOIN instances i ON i.id = s.instance_id
+                    WHERE s.instance_id = %s
+                """, (instance_id,))
+
+                settings = cur.fetchone()
+                if not settings:
+                    log.error(f"❌ [AUTOMATION] Configurações não encontradas para {instance_id}")
+                    return
+
+                daily_limit = settings['daily_limit']
+                ia_auto = settings['ia_auto']
+                message_template = settings['message_template'] or "Olá {nome}! Tudo bem?"
+                instance_url = settings['instance_url']
+                instance_token = settings['instance_token']
+
+                if not instance_url or not instance_token:
+                    log.error(f"❌ [AUTOMATION] instance_url ou instance_token não configurados")
+                    return
+
+                # Contar já enviados hoje
+                cur.execute("""
+                    SELECT COUNT(*) as count
+                    FROM instance_totals
+                    WHERE instance_id = %s
+                      AND mensagem_enviada = true
+                      AND updated_at::date = CURRENT_DATE
+                """, (instance_id,))
+
+                sent_today = cur.fetchone()['count']
+                remaining = max(0, daily_limit - sent_today)
+
+                log.info(f"📊 [AUTOMATION] Enviados hoje: {sent_today}/{daily_limit}, restantes: {remaining}")
+
+                if remaining <= 0:
+                    log.info(f"✅ [AUTOMATION] Limite diário atingido")
+                    return
+
+                # Buscar contatos da fila
+                processed = 0
+
+                for i in range(remaining):
+                    # Verificar se foi solicitado parar
+                    if running_automations[instance_id]["stop_requested"]:
+                        log.info(f"⏹️ [AUTOMATION] Parada solicitada após {processed} envios")
+                        break
+
+                    # Buscar próximo contato da fila que NÃO foi enviado
+                    cur.execute("""
+                        SELECT q.name, q.phone, q.niche
+                        FROM instance_queue q
+                        LEFT JOIN instance_totals t ON t.instance_id = q.instance_id AND t.phone = q.phone
+                        WHERE q.instance_id = %s
+                          AND (t.mensagem_enviada IS NOT TRUE OR t.phone IS NULL)
+                        ORDER BY q.created_at ASC
+                        LIMIT 1
+                    """, (instance_id,))
+
+                    contact = cur.fetchone()
+
+                    if not contact:
+                        log.info(f"✅ [AUTOMATION] Fila vazia, finalizando")
+                        break
+
+                    name = contact['name']
+                    phone = contact['phone']
+                    niche = contact['niche'] or ''
+
+                    log.info(f"📤 [AUTOMATION] Enviando para {name} ({phone})")
+
+                    # Preparar mensagem
+                    message = message_template.replace('{nome}', name).replace('{phone}', phone).replace('{niche}', niche)
+
+                    # Enviar mensagem via UAZAPI
+                    success = await _send_whatsapp_message(instance_url, instance_token, phone, message)
+
+                    if success:
+                        log.info(f"✅ [AUTOMATION] Mensagem enviada com sucesso para {phone}")
+
+                        # Marcar como enviado em instance_totals
+                        cur.execute("""
+                            INSERT INTO instance_totals (instance_id, name, phone, niche, mensagem_enviada, updated_at)
+                            VALUES (%s, %s, %s, %s, true, NOW())
+                            ON CONFLICT (instance_id, phone)
+                            DO UPDATE SET
+                                mensagem_enviada = true,
+                                updated_at = NOW()
+                        """, (instance_id, name, phone, niche))
+
+                        processed += 1
+                    else:
+                        log.warning(f"⚠️ [AUTOMATION] Falha ao enviar para {phone}")
+
+                    # Remover da fila SEMPRE (mesmo se falhou)
+                    cur.execute("""
+                        DELETE FROM instance_queue
+                        WHERE instance_id = %s AND phone = %s
+                    """, (instance_id, phone))
+
+                    conn.commit()
+
+                    # Delay entre mensagens (5-15 segundos)
+                    delay = 5 + (i % 10)
+                    log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s antes da próxima mensagem...")
+                    await asyncio.sleep(delay)
+
+                log.info(f"✅ [AUTOMATION] Loop finalizado. Processados: {processed}")
+
+    except Exception as e:
+        log.error(f"❌ [AUTOMATION] Erro no loop: {e}")
+        import traceback
+        traceback.print_exc()
+
+    finally:
+        # Remover do registro
+        if instance_id in running_automations:
+            del running_automations[instance_id]
+
+
+async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: str, message: str) -> bool:
+    """Enviar mensagem via UAZAPI"""
+    try:
+        # Normalizar número
+        clean_phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+        if not clean_phone.startswith('55'):
+            clean_phone = '55' + clean_phone
+
+        # Montar URL e headers
+        url = instance_url.rstrip('/') + '/send/text'
+
+        headers = {
+            'Content-Type': 'application/json',
+            'token': instance_token
+        }
+
+        payload = {
+            'phone': clean_phone,
+            'message': message
+        }
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code == 200:
+                return True
+            else:
+                log.error(f"❌ [UAZAPI] Erro {response.status_code}: {response.text}")
+                return False
+
+    except Exception as e:
+        log.error(f"❌ [UAZAPI] Exceção ao enviar: {e}")
+        return False
