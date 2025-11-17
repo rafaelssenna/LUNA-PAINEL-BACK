@@ -1199,6 +1199,17 @@ async def update_instance_settings(
         _ensure_instance_exists(conn, instance_id)
 
         with conn.cursor() as cur:
+            # ✅ Normalizar valores: string vazia ou só espaços → None
+            redirect_phone_value = None
+            if payload.redirect_phone:
+                stripped = payload.redirect_phone.strip()
+                redirect_phone_value = stripped if stripped else None
+
+            message_template_value = None
+            if payload.message_template:
+                stripped = payload.message_template.strip()
+                message_template_value = stripped if stripped else None
+
             # Atualizar instance_settings
             cur.execute(
                 """
@@ -1218,21 +1229,20 @@ async def update_instance_settings(
                     payload.daily_limit,
                     payload.auto_run,
                     payload.ia_auto,
-                    payload.message_template or None,
-                    payload.redirect_phone or None,
+                    message_template_value,
+                    redirect_phone_value,
                 ),
             )
 
-            # TAMBÉM atualizar instances.redirect_phone para manter sincronizado
-            if payload.redirect_phone is not None:
-                cur.execute(
-                    """
-                    UPDATE instances
-                    SET redirect_phone = %s, updated_at = NOW()
-                    WHERE id = %s
-                    """,
-                    (payload.redirect_phone, instance_id)
-                )
+            # ✅ SEMPRE atualizar instances.redirect_phone para manter sincronizado
+            cur.execute(
+                """
+                UPDATE instances
+                SET redirect_phone = %s, updated_at = NOW()
+                WHERE id = %s
+                """,
+                (redirect_phone_value, instance_id)
+            )
 
         conn.commit()  # ✅ Necessário com autocommit=False
 
