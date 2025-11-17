@@ -1509,7 +1509,7 @@ async def get_instance_chats(
                         COUNT(*) as message_count
                     FROM messages m
                     WHERE m.instance_id = %s
-                    GROUP BY m.chat_id
+                    GROUP BY m.chat_id, m.instance_id
                     ORDER BY MAX(m.timestamp) DESC
                     LIMIT 100
                 """, (instance_id,))
