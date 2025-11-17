@@ -2044,6 +2044,10 @@ async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: 
         if not clean_phone.startswith('55'):
             clean_phone = '55' + clean_phone
 
+        # Normalizar URL (garantir protocolo)
+        if not instance_url.startswith('http://') and not instance_url.startswith('https://'):
+            instance_url = 'https://' + instance_url
+
         # Montar URL e headers
         url = instance_url.rstrip('/') + '/send/text'
 
