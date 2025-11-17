@@ -941,6 +941,8 @@ async def queue_remove_or_mark(
                     (instance_id, digits),
                 )
 
+        conn.commit()  # ✅ Necessário com autocommit=False
+
     return {"ok": True}
 
 
@@ -1067,6 +1069,8 @@ async def add_contact_to_instance(
                     (instance_id, digits, payload.name, payload.niche, payload.region),
                 )
                 status = "inserted" if cur.rowcount > 0 else "skipped_conflict"
+
+        conn.commit()  # ✅ Necessário com autocommit=False
 
     return {"status": status}
 
@@ -1212,6 +1216,8 @@ async def update_instance_settings(
                     payload.message_template or None,
                 ),
             )
+
+        conn.commit()  # ✅ Necessário com autocommit=False
 
     return {"ok": True}
 
