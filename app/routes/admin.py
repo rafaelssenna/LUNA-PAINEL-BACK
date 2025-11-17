@@ -1915,8 +1915,8 @@ async def _run_automation_loop(instance_id: str):
                         s.daily_limit,
                         s.ia_auto,
                         s.message_template,
-                        i.instance_url,
-                        i.instance_token
+                        i.uazapi_host,
+                        i.uazapi_token
                     FROM instance_settings s
                     JOIN instances i ON i.id = s.instance_id
                     WHERE s.instance_id = %s
@@ -1930,11 +1930,11 @@ async def _run_automation_loop(instance_id: str):
                 daily_limit = settings['daily_limit']
                 ia_auto = settings['ia_auto']
                 message_template = settings['message_template'] or "Olá {nome}! Tudo bem?"
-                instance_url = settings['instance_url']
-                instance_token = settings['instance_token']
+                instance_url = settings['uazapi_host']
+                instance_token = settings['uazapi_token']
 
                 if not instance_url or not instance_token:
-                    log.error(f"❌ [AUTOMATION] instance_url ou instance_token não configurados")
+                    log.error(f"❌ [AUTOMATION] uazapi_host ou uazapi_token não configurados")
                     return
 
                 # Contar já enviados hoje
