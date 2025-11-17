@@ -176,11 +176,24 @@ def init_schema():
       auto_run         BOOLEAN NOT NULL DEFAULT FALSE,
       ia_auto          BOOLEAN NOT NULL DEFAULT FALSE,
       message_template TEXT,
+      redirect_phone   TEXT,
       updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW()
     );
 
     CREATE INDEX IF NOT EXISTS idx_instance_settings_updated
       ON instance_settings(updated_at DESC);
+
+    -- Migração: adicionar redirect_phone se não existir
+    DO $$
+    BEGIN
+      IF NOT EXISTS (
+        SELECT 1
+        FROM information_schema.columns
+        WHERE table_name = 'instance_settings' AND column_name = 'redirect_phone'
+      ) THEN
+        ALTER TABLE instance_settings ADD COLUMN redirect_phone TEXT;
+      END IF;
+    END$$;
     
     -- =========================================
     -- LEAD STATUS
