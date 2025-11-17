@@ -276,16 +276,20 @@ def init_schema():
     -- MESSAGES (armazenamento local)
     -- =========================================
     CREATE TABLE IF NOT EXISTS messages (
+      id            SERIAL,
       instance_id   TEXT        NOT NULL,
+      session_id    TEXT,
+      message_id    TEXT        NOT NULL,
       chat_id       TEXT        NOT NULL,
-      msgid         TEXT        NOT NULL,
       from_me       BOOLEAN     NOT NULL DEFAULT FALSE,
-      timestamp     BIGINT      NOT NULL,
+      sender        TEXT,
       content       TEXT,
       media_url     TEXT,
+      media_type    TEXT,
       media_mime    TEXT,
+      timestamp     BIGINT      NOT NULL,
       created_at    TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-      PRIMARY KEY (instance_id, chat_id, msgid)
+      PRIMARY KEY (instance_id, message_id)
     );
 
     CREATE INDEX IF NOT EXISTS idx_messages_chat_ts
