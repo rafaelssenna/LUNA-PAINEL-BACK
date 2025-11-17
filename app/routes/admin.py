@@ -1458,3 +1458,223 @@ async def reset_ai_memory(instance_id: str, admin: Dict = Depends(get_current_ad
             "messages_deleted": messages_deleted,
             "message": f"Memória resetada com sucesso. {messages_deleted} mensagens deletadas."
         }
+
+
+# ==============================================================================
+# CONVERSAS (WHATSAPP MONITORING)
+# ==============================================================================
+
+@router.post("/instances/{instance_id}/chats")
+async def get_instance_chats(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Lista todas as conversas (chats) de uma instância do WhatsApp.
+    Retorna informações dos chats armazenados localmente no banco.
+    """
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            # Buscar chats distintos com última mensagem
+            cur.execute("""
+                SELECT
+                    m.chat_id,
+                    MAX(m.timestamp) as last_timestamp,
+                    (
+                        SELECT content
+                        FROM messages m2
+                        WHERE m2.chat_id = m.chat_id
+                        AND m2.instance_id = m.instance_id
+                        ORDER BY m2.timestamp DESC
+                        LIMIT 1
+                    ) as last_message,
+                    (
+                        SELECT from_me
+                        FROM messages m2
+                        WHERE m2.chat_id = m.chat_id
+                        AND m2.instance_id = m.instance_id
+                        ORDER BY m2.timestamp DESC
+                        LIMIT 1
+                    ) as last_from_me,
+                    COUNT(*) as message_count
+                FROM messages m
+                WHERE m.instance_id = %s
+                GROUP BY m.chat_id
+                ORDER BY MAX(m.timestamp) DESC
+                LIMIT 100
+            """, (instance_id,))
+
+            rows = cur.fetchall()
+
+            chats = []
+            for row in rows:
+                # Extract phone number from chat_id (format: "5511999998888@c.us")
+                chat_id = row[0]
+                phone = chat_id.split('@')[0] if '@' in chat_id else chat_id
+
+                # Simple name extraction (you can enhance this by querying a contacts table)
+                name = phone  # Default to phone number
+
+                chats.append({
+                    "_chatId": chat_id,
+                    "lead_name": name,
+                    "wa_lastMessageTextVote": row[2] or "",
+                    "wa_lastMsgPreview": (row[2] or "")[:100],
+                    "phone": phone,
+                    "last_timestamp": int(row[1]) if row[1] else 0,
+                    "last_from_me": bool(row[3]),
+                    "message_count": row[4]
+                })
+
+            return {"items": chats, "total": len(chats)}
+
+
+@router.post("/instances/{instance_id}/messages")
+async def get_instance_messages(
+    instance_id: str,
+    body: Dict = None,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Retorna as mensagens de um chat específico.
+    Body deve conter: { "chatId": "5511999998888@c.us" }
+    """
+
+    if not body or "chatId" not in body:
+        raise HTTPException(status_code=400, detail="chatId é obrigatório")
+
+    chat_id = body.get("chatId")
+
+    with get_pool().connection() as conn:
+        _ensure_instance_exists(conn, instance_id)
+
+        with conn.cursor() as cur:
+            cur.execute("""
+                SELECT
+                    content,
+                    from_me,
+                    timestamp,
+                    media_type,
+                    media_url
+                FROM messages
+                WHERE instance_id = %s AND chat_id = %s
+                ORDER BY timestamp ASC
+                LIMIT 500
+            """, (instance_id, chat_id))
+
+            rows = cur.fetchall()
+
+            messages = []
+            for row in rows:
+                messages.append({
+                    "text": row[0] or "",
+                    "fromMe": bool(row[1]),
+                    "messageTimestamp": int(row[2]) if row[2] else 0,
+                    "type": row[3] or "text",
+                    "mediaUrl": row[4]
+                })
+
+            return {"items": messages, "total": len(messages)}
+
+
+@router.post("/instances/{instance_id}/export-analysis")
+async def export_chat_analysis(
+    instance_id: str,
+    body: Dict = None,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Gera análise de IA de uma conversa e retorna como texto/JSON.
+    Body deve conter: { "chatId": "5511999998888@c.us", "leadName": "João Silva" }
+    """
+
+    if not body or "chatId" not in body:
+        raise HTTPException(status_code=400, detail="chatId é obrigatório")
+
+    chat_id = body.get("chatId")
+    lead_name = body.get("leadName", "Cliente")
+
+    try:
+        # Buscar mensagens da conversa
+        with get_pool().connection() as conn:
+            _ensure_instance_exists(conn, instance_id)
+
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT
+                        content,
+                        from_me,
+                        timestamp
+                    FROM messages
+                    WHERE instance_id = %s AND chat_id = %s
+                    ORDER BY timestamp ASC
+                    LIMIT 500
+                """, (instance_id, chat_id))
+
+                rows = cur.fetchall()
+
+        if not rows:
+            raise HTTPException(status_code=404, detail="Nenhuma mensagem encontrada para este chat")
+
+        # Formatar mensagens para análise
+        conversation_text = ""
+        for row in rows:
+            sender = "Atendente" if row[1] else lead_name
+            message = row[0] or ""
+            timestamp = datetime.fromtimestamp(int(row[2])).strftime("%Y-%m-%d %H:%M:%S") if row[2] else ""
+            conversation_text += f"[{timestamp}] {sender}: {message}\n"
+
+        # Gerar análise com OpenAI
+        import openai
+        openai_key = os.getenv("OPENAI_API_KEY")
+
+        if not openai_key:
+            raise HTTPException(status_code=500, detail="OPENAI_API_KEY não configurada")
+
+        client = openai.OpenAI(api_key=openai_key)
+
+        prompt = f"""Analise a seguinte conversa de WhatsApp entre um atendente e o cliente {lead_name}.
+
+Forneça uma análise detalhada incluindo:
+1. Resumo da conversa
+2. Principais pontos discutidos
+3. Interesse do cliente (alto/médio/baixo)
+4. Próximos passos sugeridos
+5. Observações importantes
+
+Conversa:
+{conversation_text}
+"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "Você é um analista de vendas especializado em analisar conversas de WhatsApp."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+
+        analysis = response.choices[0].message.content
+
+        # Retornar análise como JSON (frontend pode converter para PDF)
+        return {
+            "ok": True,
+            "chatId": chat_id,
+            "leadName": lead_name,
+            "analysis": analysis,
+            "messageCount": len(rows),
+            "generatedAt": datetime.now(timezone.utc).isoformat()
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"Erro ao gerar análise: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar análise: {str(e)}")
