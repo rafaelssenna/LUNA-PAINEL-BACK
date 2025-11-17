@@ -44,6 +44,7 @@ class InstanceStatusOut(BaseModel):
     phone_number: Optional[str] = None
     admin_status: str
     connected: bool
+    instance_jwt: Optional[str] = None  # JWT para acessar os chats
 
 # ==============================================================================
 # ROTAS
@@ -661,23 +662,71 @@ async def get_status_route(
                     )
                     conn.commit()
             current_status = "disconnected"
-        
+
+        # Gerar JWT da instância se conectado
+        instance_jwt = None
+        if connected:
+            from datetime import timedelta
+            import jwt
+
+            secret = os.getenv("JWT_SECRET", "change-me")
+            now = datetime.utcnow()
+            exp = now + timedelta(days=30)  # 30 dias de validade
+
+            payload = {
+                "iss": "luna-backend",
+                "sub": "luna-user",
+                "iat": int(now.timestamp()),
+                "exp": int(exp.timestamp()),
+                "token": token,
+                "host": os.getenv("UAZAPI_HOST", ""),
+                "instance_token": token,
+                "instance_id": instance_id,
+            }
+
+            instance_jwt = jwt.encode(payload, secret, algorithm="HS256")
+
         return InstanceStatusOut(
             instance_id=instance_id,
             status=current_status,
             phone_number=phone_number,
             admin_status=admin_status,
-            connected=connected
+            connected=connected,
+            instance_jwt=instance_jwt
         )
         
     except uazapi.UazapiError as e:
         # Se falhar, retornar status do banco
+        # Gerar JWT mesmo se houver erro, desde que esteja conectado no banco
+        instance_jwt = None
+        if current_status == "connected":
+            from datetime import timedelta
+            import jwt
+
+            secret = os.getenv("JWT_SECRET", "change-me")
+            now = datetime.utcnow()
+            exp = now + timedelta(days=30)
+
+            payload = {
+                "iss": "luna-backend",
+                "sub": "luna-user",
+                "iat": int(now.timestamp()),
+                "exp": int(exp.timestamp()),
+                "token": token,
+                "host": os.getenv("UAZAPI_HOST", ""),
+                "instance_token": token,
+                "instance_id": instance_id,
+            }
+
+            instance_jwt = jwt.encode(payload, secret, algorithm="HS256")
+
         return InstanceStatusOut(
             instance_id=instance_id,
             status=current_status,
             phone_number=phone_number,
             admin_status=admin_status,
-            connected=current_status == "connected"
+            connected=current_status == "connected",
+            instance_jwt=instance_jwt
         )
 
 @router.delete("/{instance_id}")
