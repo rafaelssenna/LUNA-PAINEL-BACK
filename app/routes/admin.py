@@ -1959,6 +1959,33 @@ async def _run_automation_loop(instance_id: str):
                     log.info(f"✅ [AUTOMATION] Limite diário atingido")
                     return
 
+                # Calcular distribuição de horários (8:00 - 17:30)
+                from datetime import datetime, time, timedelta
+                import random
+
+                agora = datetime.now()
+                hora_inicio = agora.replace(hour=8, minute=0, second=0, microsecond=0)
+                hora_fim = agora.replace(hour=17, minute=30, second=0, microsecond=0)
+
+                # Se for antes das 8:00, esperar até 8:00
+                if agora < hora_inicio:
+                    wait_seconds = (hora_inicio - agora).total_seconds()
+                    log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 08:00 ({wait_seconds/60:.1f} minutos)...")
+                    await asyncio.sleep(wait_seconds)
+                    agora = datetime.now()
+
+                # Se for depois das 17:30, não enviar
+                if agora > hora_fim:
+                    log.info(f"⏰ [AUTOMATION] Fora do horário permitido (08:00-17:30). Finalizando.")
+                    return
+
+                # Calcular tempo disponível e intervalo entre mensagens
+                tempo_disponivel = (hora_fim - agora).total_seconds()  # em segundos
+                intervalo_medio = tempo_disponivel / remaining if remaining > 0 else 60
+
+                log.info(f"⏱️ [AUTOMATION] Distribuindo {remaining} mensagens em {tempo_disponivel/3600:.1f} horas")
+                log.info(f"⏱️ [AUTOMATION] Intervalo médio: {intervalo_medio/60:.1f} minutos por mensagem")
+
                 # Buscar contatos da fila
                 processed = 0
 
@@ -1966,6 +1993,12 @@ async def _run_automation_loop(instance_id: str):
                     # Verificar se foi solicitado parar
                     if instance_id in running_automations and running_automations[instance_id].get("stop_requested", False):
                         log.info(f"⏹️ [AUTOMATION] Parada solicitada após {processed} envios")
+                        break
+
+                    # Verificar se ainda está no horário permitido
+                    agora_check = datetime.now()
+                    if agora_check > hora_fim:
+                        log.info(f"⏰ [AUTOMATION] Fim do horário permitido (17:30). Processados: {processed}")
                         break
 
                     # Buscar próximo contato da fila que NÃO foi enviado
@@ -2032,9 +2065,17 @@ async def _run_automation_loop(instance_id: str):
 
                     conn.commit()
 
-                    # Delay entre mensagens (5-15 segundos)
-                    delay = 5 + (i % 10)
-                    log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s antes da próxima mensagem...")
+                    # Delay inteligente com distribuição ao longo do dia
+                    # Adiciona aleatoriedade de ±30% para parecer mais natural
+                    variacao = random.uniform(0.7, 1.3)
+                    delay = int(intervalo_medio * variacao)
+
+                    # Garantir mínimo de 30 segundos e máximo de 2 horas
+                    delay = max(30, min(delay, 7200))
+
+                    log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s ({delay/60:.1f} min) antes da próxima mensagem...")
+                    log.info(f"⏱️ [AUTOMATION] Progresso: {processed}/{remaining} enviados")
+
                     await asyncio.sleep(delay)
 
                 log.info(f"✅ [AUTOMATION] Loop finalizado. Processados: {processed}")
