@@ -2217,3 +2217,66 @@ def start_scheduler():
         log.info("✅ [SCHEDULER] Task de agendamento criada")
     else:
         log.info("ℹ️ [SCHEDULER] Scheduler já está rodando")
+
+
+@router.get("/instances/{instance_id}/next-run")
+async def get_next_run(
+    instance_id: str,
+    admin: Dict = Depends(get_current_admin)
+):
+    """Retorna informações sobre a próxima execução automática"""
+
+    with get_pool().connection() as conn:
+        with conn.cursor() as cur:
+            # Buscar configuração
+            cur.execute("""
+                SELECT auto_run, daily_limit
+                FROM instance_settings
+                WHERE instance_id = %s
+            """, (instance_id,))
+
+            settings = cur.fetchone()
+
+            if not settings:
+                raise HTTPException(status_code=404, detail="Configurações não encontradas")
+
+            auto_run = settings['auto_run']
+            daily_limit = settings['daily_limit']
+
+            # Calcular próxima execução
+            agora = datetime.now()
+            dia_semana = agora.weekday()  # 0=segunda, 6=domingo
+
+            # Calcular próximo dia útil às 7:30
+            if dia_semana < 5:  # Segunda a sexta
+                # Se for antes das 7:30 hoje, próxima execução é hoje
+                if agora.hour < 7 or (agora.hour == 7 and agora.minute < 30):
+                    proxima_execucao = agora.replace(hour=7, minute=30, second=0, microsecond=0)
+                else:
+                    # Senão, é amanhã (se for sexta, pula para segunda)
+                    dias_ate_proximo = 3 if dia_semana == 4 else 1  # sexta -> segunda (3 dias)
+                    proxima_execucao = (agora + timedelta(days=dias_ate_proximo)).replace(hour=7, minute=30, second=0, microsecond=0)
+            else:
+                # Final de semana -> próxima segunda 7:30
+                dias_ate_segunda = (7 - dia_semana) % 7
+                if dias_ate_segunda == 0:
+                    dias_ate_segunda = 1  # Se for domingo, próxima segunda é em 1 dia
+                proxima_execucao = (agora + timedelta(days=dias_ate_segunda)).replace(hour=7, minute=30, second=0, microsecond=0)
+
+            # Verificar se está rodando agora
+            is_running = instance_id in running_automations
+
+            # Tempo até próxima execução
+            tempo_ate_proxima = (proxima_execucao - agora).total_seconds()
+
+            return {
+                "auto_run": auto_run,
+                "daily_limit": daily_limit,
+                "is_running": is_running,
+                "next_run": proxima_execucao.isoformat(),
+                "next_run_formatted": proxima_execucao.strftime("%d/%m/%Y às %H:%M"),
+                "next_run_day_name": ["Segunda", "Terça", "Quarta", "Quinta", "Sexta", "Sábado", "Domingo"][proxima_execucao.weekday()],
+                "seconds_until_next": int(tempo_ate_proxima),
+                "hours_until_next": round(tempo_ate_proxima / 3600, 1),
+                "current_time": agora.isoformat()
+            }
