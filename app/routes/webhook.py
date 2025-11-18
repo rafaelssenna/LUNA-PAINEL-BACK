@@ -131,6 +131,95 @@ def extract_number(data: Dict[str, Any]) -> str:
     return ""
 
 
+def extract_message_id(data: Dict[str, Any]) -> str:
+    """Extrai ID da mensagem para download de mídia"""
+    # Possíveis caminhos para o message ID
+    paths = [
+        "id",
+        "messageId",
+        "message_id",
+        ["message", "id"],
+        ["chat", "lastMessage", "id"],
+        ["data", "id"]
+    ]
+
+    for path in paths:
+        if isinstance(path, str):
+            val = data.get(path)
+            if val:
+                return str(val)
+        else:
+            # Path aninhado
+            val = data
+            for key in path:
+                if isinstance(val, dict):
+                    val = val.get(key)
+                else:
+                    val = None
+                    break
+            if val:
+                return str(val)
+
+    return ""
+
+
+async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_token: str) -> str:
+    """
+    Transcreve áudio usando a UAZAPI (já tem Whisper integrado!)
+    Retorna o texto transcrito ou string vazia se falhar
+    """
+    if not message_id or not uazapi_host or not uazapi_token:
+        log.error("❌ [TRANSCRIBE] Parâmetros faltando")
+        return ""
+
+    try:
+        # Garantir protocolo na URL
+        if not uazapi_host.startswith('http://') and not uazapi_host.startswith('https://'):
+            uazapi_host = 'https://' + uazapi_host
+
+        url = uazapi_host.rstrip('/') + '/message/download'
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'token': uazapi_token
+        }
+
+        payload = {
+            'id': message_id,
+            'transcribe': True,
+            'return_base64': False,  # Não precisamos do arquivo
+            'return_link': False,     # Não precisamos da URL
+            'generate_mp3': True      # Formato padrão
+        }
+
+        log.info(f"🎤 [TRANSCRIBE] Chamando UAZAPI: {url}")
+        log.info(f"🎤 [TRANSCRIBE] Message ID: {message_id}")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+            if response.status_code == 200:
+                data = response.json()
+                transcription = data.get('transcription', '')
+
+                if transcription:
+                    log.info(f"✅ [TRANSCRIBE] Sucesso: {len(transcription)} caracteres")
+                    return transcription.strip()
+                else:
+                    log.warning("⚠️ [TRANSCRIBE] Resposta sem transcrição")
+                    return ""
+            else:
+                log.error(f"❌ [TRANSCRIBE] Erro {response.status_code}: {response.text}")
+                return ""
+
+    except Exception as e:
+        log.error(f"❌ [TRANSCRIBE] Exceção: {e}")
+        import traceback
+        traceback.print_exc()
+        return ""
+
+
 async def get_instance_config(instance_id: str) -> Optional[Dict[str, Any]]:
     """Busca configuração da instância no banco"""
     try:
@@ -793,9 +882,48 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
     number = extract_number(data)
     text = extract_text(data)
     from_me = data.get("fromMe", False)
-    
+
+    # 🎤 DETECTAR E PROCESSAR ÁUDIO
+    message_type = (
+        data.get("messageType") or
+        data.get("type") or
+        data.get("message", {}).get("messageType") or
+        data.get("chat", {}).get("lastMessage", {}).get("type") or
+        ""
+    ).lower()
+
+    is_audio = message_type in ["audio", "ptt", "voice", "audioMessage"]
+
+    if is_audio and not text:
+        log.info(f"🎤 [AUDIO] Mensagem de áudio detectada de {number}")
+        try:
+            # Buscar configuração da instância para obter credenciais UAZAPI
+            config = await get_instance_config(instance_id)
+            if not config:
+                log.error(f"❌ [AUDIO] Configuração da instância {instance_id} não encontrada")
+            else:
+                uazapi_host = config.get('host', '')
+                uazapi_token = config.get('token', '')
+                message_id = extract_message_id(data)
+
+                if not message_id:
+                    log.error(f"❌ [AUDIO] Message ID não encontrado no payload")
+                elif not uazapi_host or not uazapi_token:
+                    log.error(f"❌ [AUDIO] Credenciais UAZAPI não configuradas")
+                else:
+                    # Transcrever áudio via UAZAPI
+                    text = await transcribe_audio_via_uazapi(message_id, uazapi_host, uazapi_token)
+                    if text:
+                        log.info(f"✅ [AUDIO] Transcrição: \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
+                    else:
+                        log.warning(f"⚠️ [AUDIO] Transcrição vazia")
+        except Exception as e:
+            log.error(f"❌ [AUDIO] Erro ao transcrever: {e}")
+            import traceback
+            traceback.print_exc()
+
     # Log simplificado
-    log.info(f"📥 [WEBHOOK] {number}: \"{text[:50]}{'...' if len(text) > 50 else ''}\" (instance: {instance_id})")
+    log.info(f"📥 [WEBHOOK] {number}: \"{text[:50] if text else '(sem texto)'}{'...' if text and len(text) > 50 else ''}\" (instance: {instance_id})")
     
     if not instance_id:
         log.warning("⚠️ [WEBHOOK] Instance ID não encontrado! Ignorando.")
