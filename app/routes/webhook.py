@@ -199,8 +199,12 @@ async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(url, json=payload, headers=headers)
 
+            log.info(f"🎤 [TRANSCRIBE] Status code: {response.status_code}")
+
             if response.status_code == 200:
                 data = response.json()
+                log.info(f"🎤 [TRANSCRIBE] Resposta completa: {json.dumps(data, indent=2, default=str)[:500]}")
+
                 transcription = data.get('transcription', '')
 
                 if transcription:
@@ -208,6 +212,7 @@ async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_
                     return transcription.strip()
                 else:
                     log.warning("⚠️ [TRANSCRIBE] Resposta sem transcrição")
+                    log.warning(f"⚠️ [TRANSCRIBE] Keys na resposta: {list(data.keys())}")
                     return ""
             else:
                 log.error(f"❌ [TRANSCRIBE] Erro {response.status_code}: {response.text}")
@@ -815,7 +820,7 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
 
     # 🔍 DEBUG: Log do payload completo
     import json
-    log.info(f"📦 [WEBHOOK] PAYLOAD COMPLETO: {json.dumps(data, indent=2, default=str)[:500]}...")
+    log.info(f"📦 [WEBHOOK] PAYLOAD COMPLETO: {json.dumps(data, indent=2, default=str)[:2000]}...")
 
     # Extrai dados
     # UAZAPI envia "owner" que é o telefone da instância
@@ -892,7 +897,13 @@ async def whatsapp_webhook(request: Request, background_tasks: BackgroundTasks):
         ""
     ).lower()
 
-    is_audio = message_type in ["audio", "ptt", "voice", "audioMessage"]
+    log.info(f"🎤 [DEBUG] message_type detectado: '{message_type}'")
+    log.info(f"🎤 [DEBUG] text inicial: '{text}'")
+    log.info(f"🎤 [DEBUG] fromMe: {from_me}")
+
+    is_audio = message_type in ["audio", "ptt", "voice", "audiomessage"]
+
+    log.info(f"🎤 [DEBUG] is_audio: {is_audio}, not text: {not text}")
 
     if is_audio and not text:
         log.info(f"🎤 [AUDIO] Mensagem de áudio detectada de {number}")
