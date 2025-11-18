@@ -1,4 +1,4 @@
-# app/routes/webhook.p
+# app/routes/webhook.py
 """
 WEBHOOK WHATSAPP - Recebe mensagens e responde com IA
 Implementação do agente Luna com Function Calling (igual ao TypeScript)
@@ -172,6 +172,13 @@ async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_
         log.error("❌ [TRANSCRIBE] Parâmetros faltando")
         return ""
 
+    # ✅ Pegar chave OpenAI do ambiente (UAZAPI precisa dela para transcrever!)
+    import os
+    openai_key = os.getenv("OPENAI_API_KEY", "")
+    if not openai_key:
+        log.error("❌ [TRANSCRIBE] OPENAI_API_KEY não configurado! Não é possível transcrever.")
+        return ""
+
     try:
         # Garantir protocolo na URL
         if not uazapi_host.startswith('http://') and not uazapi_host.startswith('https://'):
@@ -188,13 +195,18 @@ async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_
         payload = {
             'id': message_id,
             'transcribe': True,
-            'return_base64': False,  # Não precisamos do arquivo
-            'return_link': False,     # Não precisamos da URL
-            'generate_mp3': True      # Formato padrão
+            'openai_apikey': openai_key,  # ✅ CHAVE OPENAI NECESSÁRIA!
+            'return_base64': False,
+            'return_link': False,
+            'generate_mp3': True,
+            'download_quoted': False
         }
 
         log.info(f"🎤 [TRANSCRIBE] Chamando UAZAPI: {url}")
         log.info(f"🎤 [TRANSCRIBE] Message ID: {message_id}")
+        # Mascarar chave OpenAI no log
+        safe_payload = {**payload, 'openai_apikey': f"{openai_key[:7]}...{openai_key[-4:]}" if openai_key else ""}
+        log.info(f"🎤 [TRANSCRIBE] Payload enviado: {safe_payload}")
 
         async with httpx.AsyncClient(timeout=30.0) as client:
             response = await client.post(url, json=payload, headers=headers)
@@ -206,13 +218,21 @@ async def transcribe_audio_via_uazapi(message_id: str, uazapi_host: str, uazapi_
                 log.info(f"🎤 [TRANSCRIBE] Resposta completa: {json.dumps(data, indent=2, default=str)[:500]}")
 
                 transcription = data.get('transcription', '')
+                file_url = data.get('fileURL', '')
+
+                log.info(f"🎤 [TRANSCRIBE] Transcription presente: {bool(transcription)}")
+                log.info(f"🎤 [TRANSCRIBE] FileURL presente: {bool(file_url)}")
 
                 if transcription:
                     log.info(f"✅ [TRANSCRIBE] Sucesso: {len(transcription)} caracteres")
+                    log.info(f"✅ [TRANSCRIBE] Texto: \"{transcription}\"")
                     return transcription.strip()
                 else:
                     log.warning("⚠️ [TRANSCRIBE] Resposta sem transcrição")
                     log.warning(f"⚠️ [TRANSCRIBE] Keys na resposta: {list(data.keys())}")
+                    if file_url:
+                        log.warning(f"⚠️ [TRANSCRIBE] Arquivo disponível em: {file_url}")
+                        log.warning(f"⚠️ [TRANSCRIBE] UAZAPI não transcreveu o áudio. Possível áudio vazio ou muito curto.")
                     return ""
             else:
                 log.error(f"❌ [TRANSCRIBE] Erro {response.status_code}: {response.text}")
