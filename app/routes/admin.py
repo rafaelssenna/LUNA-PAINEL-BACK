@@ -1959,20 +1959,24 @@ async def _run_automation_loop(instance_id: str):
                     log.info(f"✅ [AUTOMATION] Limite diário atingido")
                     return
 
-                # Calcular distribuição de horários (8:00 - 17:30)
-                from datetime import datetime, time, timedelta
+                # Calcular distribuição de horários (7:30 - 17:30) - HORÁRIO DE BRASÍLIA
+                from datetime import datetime, time, timedelta, timezone
                 import random
 
-                agora = datetime.now()
+                # Usar horário de Brasília (UTC-3)
+                TZ_BRASILIA = timezone(timedelta(hours=-3))
+                agora = datetime.now(TZ_BRASILIA)
                 hora_inicio = agora.replace(hour=7, minute=30, second=0, microsecond=0)
                 hora_fim = agora.replace(hour=17, minute=30, second=0, microsecond=0)
+
+                log.info(f"⏰ [AUTOMATION] Horário atual (Brasília): {agora.strftime('%H:%M:%S')}")
 
                 # Se for antes das 7:30, esperar até 7:30
                 if agora < hora_inicio:
                     wait_seconds = (hora_inicio - agora).total_seconds()
                     log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 07:30 ({wait_seconds/60:.1f} minutos)...")
                     await asyncio.sleep(wait_seconds)
-                    agora = datetime.now()
+                    agora = datetime.now(TZ_BRASILIA)
 
                 # Se for depois das 17:30, não enviar
                 if agora > hora_fim:
@@ -2142,14 +2146,19 @@ async def automation_scheduler():
     """
     Scheduler que roda em background e inicia automaticamente
     o loop de automação todos os dias às 7:30 (segunda a sexta)
+    HORÁRIO DE BRASÍLIA (UTC-3)
     """
-    log.info("📅 [SCHEDULER] Agendador de automação iniciado")
+    log.info("📅 [SCHEDULER] Agendador de automação iniciado (Horário de Brasília UTC-3)")
 
     ultima_execucao = None
 
     while True:
         try:
-            agora = datetime.now()
+            # Usar horário de Brasília (UTC-3)
+            from datetime import timezone, timedelta
+            TZ_BRASILIA = timezone(timedelta(hours=-3))
+            agora = datetime.now(TZ_BRASILIA)
+
             dia_semana = agora.weekday()  # 0=segunda, 6=domingo
             hora_atual = agora.hour
             minuto_atual = agora.minute
@@ -2157,7 +2166,7 @@ async def automation_scheduler():
             # Verificar se é dia útil (segunda=0 a sexta=4)
             eh_dia_util = dia_semana < 5
 
-            # Verificar se é 7:30
+            # Verificar se é 7:30 (horário de Brasília)
             eh_horario_inicio = hora_atual == 7 and minuto_atual == 30
 
             # Chave única para evitar execução duplicada no mesmo minuto
