@@ -94,6 +94,7 @@ app.add_middleware(
 async def _startup():
     import asyncio
     logger = logging.getLogger("uvicorn.error")
+    logger.info("🚀 MATHEUS LINDÃO DE MAIS 🚀")
     logger.info("Inicializando Luna Backend.")
     logger.info("CORS allow_origins: %s", _all_origins)
     logger.info("CORS allow_origin_regex: %s", allowed_origin_regex())
