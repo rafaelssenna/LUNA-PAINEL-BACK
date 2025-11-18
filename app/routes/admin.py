@@ -1882,12 +1882,16 @@ async def stop_automation(
     admin: Dict = Depends(get_current_admin)
 ):
     """Parar loop de automação em execução"""
+    log.info(f"🛑 [AUTOMATION] Solicitação de parada recebida para {instance_id}")
+    log.info(f"🛑 [AUTOMATION] Automações em execução: {list(running_automations.keys())}")
 
     if instance_id not in running_automations:
+        log.warning(f"⚠️ [AUTOMATION] Instância {instance_id} não está em execução")
         raise HTTPException(status_code=404, detail="Nenhuma automação em execução")
 
     # Marcar para parar
     running_automations[instance_id]["stop_requested"] = True
+    log.info(f"✅ [AUTOMATION] Flag de parada definida para {instance_id}")
 
     return {"ok": True, "message": "Parada solicitada"}
 
@@ -1960,7 +1964,7 @@ async def _run_automation_loop(instance_id: str):
 
                 for i in range(remaining):
                     # Verificar se foi solicitado parar
-                    if running_automations[instance_id]["stop_requested"]:
+                    if instance_id in running_automations and running_automations[instance_id].get("stop_requested", False):
                         log.info(f"⏹️ [AUTOMATION] Parada solicitada após {processed} envios")
                         break
 
@@ -1987,8 +1991,18 @@ async def _run_automation_loop(instance_id: str):
 
                     log.info(f"📤 [AUTOMATION] Enviando para {name} ({phone})")
 
+                    # Determinar saudação baseada no horário
+                    from datetime import datetime
+                    hora_atual = datetime.now().hour
+                    if 5 <= hora_atual < 12:
+                        saudacao = "Bom dia"
+                    elif 12 <= hora_atual < 18:
+                        saudacao = "Boa tarde"
+                    else:
+                        saudacao = "Boa noite"
+
                     # Preparar mensagem
-                    message = message_template.replace('{nome}', name).replace('{phone}', phone).replace('{niche}', niche)
+                    message = message_template.replace('{nome}', name).replace('{phone}', phone).replace('{niche}', niche).replace('{saudacao}', saudacao)
 
                     # Enviar mensagem via UAZAPI
                     success = await _send_whatsapp_message(instance_url, instance_token, phone, message)
@@ -2034,6 +2048,7 @@ async def _run_automation_loop(instance_id: str):
         # Remover do registro
         if instance_id in running_automations:
             del running_automations[instance_id]
+            log.info(f"🏁 [AUTOMATION] Instância {instance_id} removida do registro de execução")
 
 
 async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: str, message: str) -> bool:
