@@ -1118,7 +1118,11 @@ async def import_contacts_csv(
 
     # Verificar colunas detectadas
     fieldnames = reader.fieldnames or []
-    log.info(f"📁 [CSV IMPORT] Colunas detectadas: {fieldnames}")
+    log.info(f"📁 [CSV IMPORT] Colunas detectadas (originais): {fieldnames}")
+
+    # Normalizar nomes das colunas (remover BOM e converter para minúsculo)
+    normalized_fieldnames = [fname.lstrip('\ufeff').strip().lower() for fname in fieldnames]
+    log.info(f"📁 [CSV IMPORT] Colunas normalizadas: {normalized_fieldnames}")
 
     inserted = skipped = errors = 0
     row_count = 0
@@ -1128,12 +1132,32 @@ async def import_contacts_csv(
 
         for row in reader:
             row_count += 1
-            log.info(f"📁 [CSV IMPORT] Processando linha {row_count}: {row}")
 
-            phone = row.get("phone") or row.get("telefone") or ""
-            name = row.get("name") or row.get("nome") or phone
-            niche = row.get("niche") or row.get("nicho")
-            region = row.get("region") or row.get("regiao")
+            # Criar dicionário normalizado (case-insensitive)
+            normalized_row = {}
+            for original_key, value in row.items():
+                normalized_key = original_key.lstrip('\ufeff').strip().lower()
+                normalized_row[normalized_key] = value.strip() if value else ""
+
+            log.info(f"📁 [CSV IMPORT] Processando linha {row_count}: {normalized_row}")
+
+            # Buscar valores com nomes normalizados (case-insensitive)
+            phone = (
+                normalized_row.get("phone") or
+                normalized_row.get("telefone") or
+                normalized_row.get("tel") or
+                normalized_row.get("fone") or
+                ""
+            )
+            name = (
+                normalized_row.get("name") or
+                normalized_row.get("nome") or
+                normalized_row.get("empresa") or
+                normalized_row.get("razao_social") or
+                phone
+            )
+            niche = normalized_row.get("niche") or normalized_row.get("nicho")
+            region = normalized_row.get("region") or normalized_row.get("regiao") or normalized_row.get("cidade")
 
             log.info(f"📁 [CSV IMPORT] Linha {row_count} - Phone: {phone}, Name: {name}, Niche: {niche}, Region: {region}")
 
