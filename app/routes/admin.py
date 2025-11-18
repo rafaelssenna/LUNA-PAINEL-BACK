@@ -1964,19 +1964,19 @@ async def _run_automation_loop(instance_id: str):
                 import random
 
                 agora = datetime.now()
-                hora_inicio = agora.replace(hour=8, minute=0, second=0, microsecond=0)
+                hora_inicio = agora.replace(hour=7, minute=30, second=0, microsecond=0)
                 hora_fim = agora.replace(hour=17, minute=30, second=0, microsecond=0)
 
-                # Se for antes das 8:00, esperar até 8:00
+                # Se for antes das 7:30, esperar até 7:30
                 if agora < hora_inicio:
                     wait_seconds = (hora_inicio - agora).total_seconds()
-                    log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 08:00 ({wait_seconds/60:.1f} minutos)...")
+                    log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 07:30 ({wait_seconds/60:.1f} minutos)...")
                     await asyncio.sleep(wait_seconds)
                     agora = datetime.now()
 
                 # Se for depois das 17:30, não enviar
                 if agora > hora_fim:
-                    log.info(f"⏰ [AUTOMATION] Fora do horário permitido (08:00-17:30). Finalizando.")
+                    log.info(f"⏰ [AUTOMATION] Fora do horário permitido (07:30-17:30). Finalizando.")
                     return
 
                 # Calcular tempo disponível e intervalo entre mensagens
@@ -2130,3 +2130,90 @@ async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: 
     except Exception as e:
         log.error(f"❌ [UAZAPI] Exceção ao enviar: {e}")
         return False
+
+
+# ==============================================================================
+# AGENDADOR AUTOMÁTICO - INICIA LOOP DIARIAMENTE ÀS 7:30 (SEG-SEX)
+# ==============================================================================
+
+scheduler_task = None
+
+async def automation_scheduler():
+    """
+    Scheduler que roda em background e inicia automaticamente
+    o loop de automação todos os dias às 7:30 (segunda a sexta)
+    """
+    log.info("📅 [SCHEDULER] Agendador de automação iniciado")
+
+    ultima_execucao = None
+
+    while True:
+        try:
+            agora = datetime.now()
+            dia_semana = agora.weekday()  # 0=segunda, 6=domingo
+            hora_atual = agora.hour
+            minuto_atual = agora.minute
+
+            # Verificar se é dia útil (segunda=0 a sexta=4)
+            eh_dia_util = dia_semana < 5
+
+            # Verificar se é 7:30
+            eh_horario_inicio = hora_atual == 7 and minuto_atual == 30
+
+            # Chave única para evitar execução duplicada no mesmo minuto
+            chave_execucao = f"{agora.date()}-{hora_atual}:{minuto_atual}"
+
+            if eh_dia_util and eh_horario_inicio and chave_execucao != ultima_execucao:
+                log.info(f"🚀 [SCHEDULER] Horário de início detectado: {agora.strftime('%d/%m/%Y %H:%M')}")
+                ultima_execucao = chave_execucao
+
+                # Buscar todas as instâncias com auto_run=true
+                with get_pool().connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("""
+                            SELECT i.id, i.instance_id, u.email
+                            FROM instances i
+                            JOIN instance_settings s ON s.instance_id = i.id
+                            JOIN users u ON u.id = i.user_id
+                            WHERE s.auto_run = true
+                        """)
+
+                        instances = cur.fetchall()
+
+                        if instances:
+                            log.info(f"📊 [SCHEDULER] Encontradas {len(instances)} instâncias com auto_run ativo")
+
+                            for instance in instances:
+                                instance_id = instance['id']
+                                email = instance['email']
+
+                                # Verificar se já não está rodando
+                                if instance_id not in running_automations:
+                                    log.info(f"▶️ [SCHEDULER] Iniciando automação para {email} ({instance_id})")
+
+                                    # Iniciar em background (sem await para não bloquear)
+                                    asyncio.create_task(_run_automation_loop(instance_id))
+                                else:
+                                    log.info(f"⏭️ [SCHEDULER] Automação já rodando para {instance_id}")
+                        else:
+                            log.info("ℹ️ [SCHEDULER] Nenhuma instância com auto_run ativo encontrada")
+
+            # Aguardar 60 segundos antes de verificar novamente
+            await asyncio.sleep(60)
+
+        except Exception as e:
+            log.error(f"❌ [SCHEDULER] Erro no scheduler: {e}")
+            import traceback
+            traceback.print_exc()
+            await asyncio.sleep(60)  # Aguardar 1 minuto antes de tentar novamente
+
+
+def start_scheduler():
+    """Inicia o scheduler em background"""
+    global scheduler_task
+
+    if scheduler_task is None:
+        scheduler_task = asyncio.create_task(automation_scheduler())
+        log.info("✅ [SCHEDULER] Task de agendamento criada")
+    else:
+        log.info("ℹ️ [SCHEDULER] Scheduler já está rodando")
