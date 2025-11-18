@@ -2057,8 +2057,9 @@ async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: 
         }
 
         payload = {
-            'phone': clean_phone,
-            'message': message
+            'number': clean_phone,
+            'text': message,
+            'delay': 3000  # 3 segundos de delay para simular digitação
         }
 
         async with httpx.AsyncClient(timeout=30.0) as client:
