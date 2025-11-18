@@ -1,4 +1,4 @@
-# app/routes/webhook.py
+# app/routes/webhook.p
 """
 WEBHOOK WHATSAPP - Recebe mensagens e responde com IA
 Implementação do agente Luna com Function Calling (igual ao TypeScript)
