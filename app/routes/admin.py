@@ -1846,7 +1846,7 @@ async def get_automation_state(
             # Verificar se está rodando
             is_running = instance_id in running_automations
 
-            return {
+            response = {
                 "loop_status": "running" if is_running else "idle",
                 "sent_today": sent_today,
                 "cap": daily_limit,
@@ -1854,6 +1854,15 @@ async def get_automation_state(
                 "actually_running": is_running,
                 "now": datetime.now(timezone.utc).isoformat()
             }
+
+            # Se estiver rodando, adicionar informações de timing
+            if is_running and instance_id in running_automations:
+                automation_info = running_automations[instance_id]
+                response["last_sent_at"] = automation_info.get("last_sent_at")
+                response["next_message_at"] = automation_info.get("next_message_at")
+                response["average_interval_seconds"] = automation_info.get("average_interval_seconds")
+
+            return response
 
 
 @router.post("/instances/{instance_id}/run-automation")
@@ -1907,7 +1916,10 @@ async def _run_automation_loop(instance_id: str):
     # Registrar que está rodando
     running_automations[instance_id] = {
         "task": asyncio.current_task(),
-        "stop_requested": False
+        "stop_requested": False,
+        "last_sent_at": None,
+        "next_message_at": None,
+        "average_interval_seconds": None
     }
 
     try:
@@ -2000,7 +2012,7 @@ async def _run_automation_loop(instance_id: str):
                         break
 
                     # Verificar se ainda está no horário permitido
-                    agora_check = datetime.now()
+                    agora_check = datetime.now(TZ_BRASILIA)
                     if agora_check > hora_fim:
                         log.info(f"⏰ [AUTOMATION] Fim do horário permitido (17:30). Processados: {processed}")
                         break
@@ -2028,9 +2040,8 @@ async def _run_automation_loop(instance_id: str):
 
                     log.info(f"📤 [AUTOMATION] Enviando para {name} ({phone})")
 
-                    # Determinar saudação baseada no horário
-                    from datetime import datetime
-                    hora_atual = datetime.now().hour
+                    # Determinar saudação baseada no horário (usar horário de Brasília)
+                    hora_atual = datetime.now(TZ_BRASILIA).hour
                     if 5 <= hora_atual < 12:
                         saudacao = "Bom dia"
                     elif 12 <= hora_atual < 18:
@@ -2076,6 +2087,15 @@ async def _run_automation_loop(instance_id: str):
 
                     # Garantir mínimo de 30 segundos e máximo de 2 horas
                     delay = max(30, min(delay, 7200))
+
+                    # Atualizar informações de timing no running_automations
+                    if instance_id in running_automations:
+                        agora_brasilia = datetime.now(TZ_BRASILIA)
+                        proxima_msg = agora_brasilia + timedelta(seconds=delay)
+
+                        running_automations[instance_id]["last_sent_at"] = agora_brasilia.isoformat()
+                        running_automations[instance_id]["next_message_at"] = proxima_msg.isoformat()
+                        running_automations[instance_id]["average_interval_seconds"] = int(intervalo_medio)
 
                     log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s ({delay/60:.1f} min) antes da próxima mensagem...")
                     log.info(f"⏱️ [AUTOMATION] Progresso: {processed}/{remaining} enviados")
