@@ -10,6 +10,7 @@ import json
 import csv
 import io
 import re
+import random
 
 from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File, BackgroundTasks
 from pydantic import BaseModel, EmailStr
@@ -1099,29 +1100,45 @@ async def import_contacts_csv(
     file: UploadFile = File(...),
     admin: Dict = Depends(get_current_admin)
 ):
+    log.info(f"📁 [CSV IMPORT] Iniciando importação para instância {instance_id}")
+    log.info(f"📁 [CSV IMPORT] Arquivo: {file.filename}")
+
     if not file.filename.lower().endswith((".csv", ".txt")):
         raise HTTPException(status_code=400, detail="Envie um arquivo CSV")
 
     content = await file.read()
     try:
         text = content.decode("utf-8")
+        log.info(f"📁 [CSV IMPORT] Decodificado como UTF-8, {len(text)} caracteres")
     except UnicodeDecodeError:
         text = content.decode("latin-1")
+        log.info(f"📁 [CSV IMPORT] Decodificado como Latin-1, {len(text)} caracteres")
 
     reader = csv.DictReader(io.StringIO(text))
 
+    # Verificar colunas detectadas
+    fieldnames = reader.fieldnames or []
+    log.info(f"📁 [CSV IMPORT] Colunas detectadas: {fieldnames}")
+
     inserted = skipped = errors = 0
+    row_count = 0
 
     with get_pool().connection() as conn:
         _ensure_instance_exists(conn, instance_id)
 
         for row in reader:
+            row_count += 1
+            log.info(f"📁 [CSV IMPORT] Processando linha {row_count}: {row}")
+
             phone = row.get("phone") or row.get("telefone") or ""
             name = row.get("name") or row.get("nome") or phone
             niche = row.get("niche") or row.get("nicho")
             region = row.get("region") or row.get("regiao")
 
+            log.info(f"📁 [CSV IMPORT] Linha {row_count} - Phone: {phone}, Name: {name}, Niche: {niche}, Region: {region}")
+
             if not phone:
+                log.warning(f"⚠️ [CSV IMPORT] Linha {row_count} - Telefone vazio, pulando")
                 skipped += 1
                 continue
 
@@ -1131,13 +1148,19 @@ async def import_contacts_csv(
                     ContactIn(name=name, phone=phone, niche=niche, region=region),
                     admin,
                 )
+                log.info(f"✅ [CSV IMPORT] Linha {row_count} - Contato {phone} inserido com sucesso")
                 inserted += 1
             except HTTPException as exc:
+                log.warning(f"⚠️ [CSV IMPORT] Linha {row_count} - HTTPException {exc.status_code}: {exc.detail}")
                 if exc.status_code == 400:
                     skipped += 1
                 else:
                     errors += 1
+            except Exception as e:
+                log.error(f"❌ [CSV IMPORT] Linha {row_count} - Erro inesperado: {e}")
+                errors += 1
 
+    log.info(f"📁 [CSV IMPORT] Finalizado - Total linhas: {row_count}, Inseridos: {inserted}, Pulados: {skipped}, Erros: {errors}")
     return {"inserted": inserted, "skipped": skipped, "errors": errors}
 
 
@@ -1923,9 +1946,9 @@ async def _run_automation_loop(instance_id: str):
     }
 
     try:
+        # Buscar configurações (conexão rápida, depois fecha)
         with get_pool().connection() as conn:
             with conn.cursor() as cur:
-                # Buscar configurações
                 cur.execute("""
                     SELECT
                         s.daily_limit,
@@ -1944,7 +1967,6 @@ async def _run_automation_loop(instance_id: str):
                     return
 
                 daily_limit = settings['daily_limit']
-                ia_auto = settings['ia_auto']
                 message_template = settings['message_template'] or "Olá {nome}! Tudo bem?"
                 instance_url = settings['uazapi_host']
                 instance_token = settings['uazapi_token']
@@ -1965,58 +1987,57 @@ async def _run_automation_loop(instance_id: str):
                 sent_today = cur.fetchone()['count']
                 remaining = max(0, daily_limit - sent_today)
 
-                log.info(f"📊 [AUTOMATION] Enviados hoje: {sent_today}/{daily_limit}, restantes: {remaining}")
+        log.info(f"📊 [AUTOMATION] Enviados hoje: {sent_today}/{daily_limit}, restantes: {remaining}")
 
-                if remaining <= 0:
-                    log.info(f"✅ [AUTOMATION] Limite diário atingido")
-                    return
+        if remaining <= 0:
+            log.info(f"✅ [AUTOMATION] Limite diário atingido")
+            return
 
-                # Calcular distribuição de horários (7:30 - 17:30) - HORÁRIO DE BRASÍLIA
-                from datetime import datetime, time, timedelta, timezone
-                import random
+        # Calcular distribuição de horários (7:30 - 17:30) - HORÁRIO DE BRASÍLIA
+        TZ_BRASILIA = timezone(timedelta(hours=-3))
+        agora = datetime.now(TZ_BRASILIA)
+        hora_inicio = agora.replace(hour=7, minute=30, second=0, microsecond=0)
+        hora_fim = agora.replace(hour=17, minute=30, second=0, microsecond=0)
 
-                # Usar horário de Brasília (UTC-3)
-                TZ_BRASILIA = timezone(timedelta(hours=-3))
-                agora = datetime.now(TZ_BRASILIA)
-                hora_inicio = agora.replace(hour=7, minute=30, second=0, microsecond=0)
-                hora_fim = agora.replace(hour=17, minute=30, second=0, microsecond=0)
+        log.info(f"⏰ [AUTOMATION] Horário atual (Brasília): {agora.strftime('%H:%M:%S')}")
 
-                log.info(f"⏰ [AUTOMATION] Horário atual (Brasília): {agora.strftime('%H:%M:%S')}")
+        # Se for antes das 7:30, esperar até 7:30
+        if agora < hora_inicio:
+            wait_seconds = (hora_inicio - agora).total_seconds()
+            log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 07:30 ({wait_seconds/60:.1f} minutos)...")
+            await asyncio.sleep(wait_seconds)
+            agora = datetime.now(TZ_BRASILIA)
 
-                # Se for antes das 7:30, esperar até 7:30
-                if agora < hora_inicio:
-                    wait_seconds = (hora_inicio - agora).total_seconds()
-                    log.info(f"⏰ [AUTOMATION] Antes do horário permitido. Aguardando até 07:30 ({wait_seconds/60:.1f} minutos)...")
-                    await asyncio.sleep(wait_seconds)
-                    agora = datetime.now(TZ_BRASILIA)
+        # Se for depois das 17:30, não enviar
+        if agora > hora_fim:
+            log.info(f"⏰ [AUTOMATION] Fora do horário permitido (07:30-17:30). Finalizando.")
+            return
 
-                # Se for depois das 17:30, não enviar
-                if agora > hora_fim:
-                    log.info(f"⏰ [AUTOMATION] Fora do horário permitido (07:30-17:30). Finalizando.")
-                    return
+        # Calcular tempo disponível e intervalo entre mensagens
+        tempo_disponivel = (hora_fim - agora).total_seconds()  # em segundos
+        intervalo_medio = tempo_disponivel / remaining if remaining > 0 else 60
 
-                # Calcular tempo disponível e intervalo entre mensagens
-                tempo_disponivel = (hora_fim - agora).total_seconds()  # em segundos
-                intervalo_medio = tempo_disponivel / remaining if remaining > 0 else 60
+        log.info(f"⏱️ [AUTOMATION] Distribuindo {remaining} mensagens em {tempo_disponivel/3600:.1f} horas")
+        log.info(f"⏱️ [AUTOMATION] Intervalo médio: {intervalo_medio/60:.1f} minutos por mensagem")
 
-                log.info(f"⏱️ [AUTOMATION] Distribuindo {remaining} mensagens em {tempo_disponivel/3600:.1f} horas")
-                log.info(f"⏱️ [AUTOMATION] Intervalo médio: {intervalo_medio/60:.1f} minutos por mensagem")
+        # Loop de envio (conexões curtas para evitar timeout)
+        processed = 0
 
-                # Buscar contatos da fila
-                processed = 0
+        while processed < remaining:
+            # Verificar se foi solicitado parar
+            if instance_id in running_automations and running_automations[instance_id].get("stop_requested", False):
+                log.info(f"⏹️ [AUTOMATION] Parada solicitada após {processed} envios")
+                break
 
-                for i in range(remaining):
-                    # Verificar se foi solicitado parar
-                    if instance_id in running_automations and running_automations[instance_id].get("stop_requested", False):
-                        log.info(f"⏹️ [AUTOMATION] Parada solicitada após {processed} envios")
-                        break
+            # Verificar se ainda está no horário permitido
+            agora_check = datetime.now(TZ_BRASILIA)
+            if agora_check > hora_fim:
+                log.info(f"⏰ [AUTOMATION] Fim do horário permitido (17:30). Processados: {processed}")
+                break
 
-                    # Verificar se ainda está no horário permitido
-                    agora_check = datetime.now(TZ_BRASILIA)
-                    if agora_check > hora_fim:
-                        log.info(f"⏰ [AUTOMATION] Fim do horário permitido (17:30). Processados: {processed}")
-                        break
-
+            # Abrir conexão curta para buscar contato
+            with get_pool().connection() as conn:
+                with conn.cursor() as cur:
                     # Buscar próximo contato da fila que NÃO foi enviado
                     cur.execute("""
                         SELECT q.name, q.phone, q.niche
@@ -2030,31 +2051,34 @@ async def _run_automation_loop(instance_id: str):
 
                     contact = cur.fetchone()
 
-                    if not contact:
-                        log.info(f"✅ [AUTOMATION] Fila vazia, finalizando")
-                        break
+            if not contact:
+                log.info(f"✅ [AUTOMATION] Fila vazia, finalizando")
+                break
 
-                    name = contact['name']
-                    phone = contact['phone']
-                    niche = contact['niche'] or ''
+            name = contact['name']
+            phone = contact['phone']
+            niche = contact['niche'] or ''
 
-                    log.info(f"📤 [AUTOMATION] Enviando para {name} ({phone})")
+            log.info(f"📤 [AUTOMATION] Enviando para {name} ({phone})")
 
-                    # Determinar saudação baseada no horário (usar horário de Brasília)
-                    hora_atual = datetime.now(TZ_BRASILIA).hour
-                    if 5 <= hora_atual < 12:
-                        saudacao = "Bom dia"
-                    elif 12 <= hora_atual < 18:
-                        saudacao = "Boa tarde"
-                    else:
-                        saudacao = "Boa noite"
+            # Determinar saudação baseada no horário (usar horário de Brasília)
+            hora_atual = datetime.now(TZ_BRASILIA).hour
+            if 5 <= hora_atual < 12:
+                saudacao = "Bom dia"
+            elif 12 <= hora_atual < 18:
+                saudacao = "Boa tarde"
+            else:
+                saudacao = "Boa noite"
 
-                    # Preparar mensagem
-                    message = message_template.replace('{nome}', name).replace('{phone}', phone).replace('{niche}', niche).replace('{saudacao}', saudacao)
+            # Preparar mensagem
+            message = message_template.replace('{nome}', name).replace('{phone}', phone).replace('{niche}', niche).replace('{saudacao}', saudacao)
 
-                    # Enviar mensagem via UAZAPI
-                    success = await _send_whatsapp_message(instance_url, instance_token, phone, message)
+            # Enviar mensagem via UAZAPI (sem conexão do banco aberta)
+            success = await _send_whatsapp_message(instance_url, instance_token, phone, message)
 
+            # Abrir conexão curta para atualizar banco
+            with get_pool().connection() as conn:
+                with conn.cursor() as cur:
                     if success:
                         log.info(f"✅ [AUTOMATION] Mensagem enviada com sucesso para {phone}")
 
@@ -2080,29 +2104,29 @@ async def _run_automation_loop(instance_id: str):
 
                     conn.commit()
 
-                    # Delay inteligente com distribuição ao longo do dia
-                    # Adiciona aleatoriedade de ±30% para parecer mais natural
-                    variacao = random.uniform(0.7, 1.3)
-                    delay = int(intervalo_medio * variacao)
+            # Delay inteligente com distribuição ao longo do dia (sem conexão aberta)
+            # Adiciona aleatoriedade de ±30% para parecer mais natural
+            variacao = random.uniform(0.7, 1.3)
+            delay = int(intervalo_medio * variacao)
 
-                    # Garantir mínimo de 30 segundos e máximo de 2 horas
-                    delay = max(30, min(delay, 7200))
+            # Garantir mínimo de 30 segundos e máximo de 2 horas
+            delay = max(30, min(delay, 7200))
 
-                    # Atualizar informações de timing no running_automations
-                    if instance_id in running_automations:
-                        agora_brasilia = datetime.now(TZ_BRASILIA)
-                        proxima_msg = agora_brasilia + timedelta(seconds=delay)
+            # Atualizar informações de timing no running_automations
+            if instance_id in running_automations:
+                agora_brasilia = datetime.now(TZ_BRASILIA)
+                proxima_msg = agora_brasilia + timedelta(seconds=delay)
 
-                        running_automations[instance_id]["last_sent_at"] = agora_brasilia.isoformat()
-                        running_automations[instance_id]["next_message_at"] = proxima_msg.isoformat()
-                        running_automations[instance_id]["average_interval_seconds"] = int(intervalo_medio)
+                running_automations[instance_id]["last_sent_at"] = agora_brasilia.isoformat()
+                running_automations[instance_id]["next_message_at"] = proxima_msg.isoformat()
+                running_automations[instance_id]["average_interval_seconds"] = int(intervalo_medio)
 
-                    log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s ({delay/60:.1f} min) antes da próxima mensagem...")
-                    log.info(f"⏱️ [AUTOMATION] Progresso: {processed}/{remaining} enviados")
+            log.info(f"⏱️ [AUTOMATION] Aguardando {delay}s ({delay/60:.1f} min) antes da próxima mensagem...")
+            log.info(f"⏱️ [AUTOMATION] Progresso: {processed}/{remaining} enviados")
 
-                    await asyncio.sleep(delay)
+            await asyncio.sleep(delay)
 
-                log.info(f"✅ [AUTOMATION] Loop finalizado. Processados: {processed}")
+        log.info(f"✅ [AUTOMATION] Loop finalizado. Processados: {processed}")
 
     except Exception as e:
         log.error(f"❌ [AUTOMATION] Erro no loop: {e}")
@@ -2119,8 +2143,8 @@ async def _run_automation_loop(instance_id: str):
 async def _send_whatsapp_message(instance_url: str, instance_token: str, phone: str, message: str) -> bool:
     """Enviar mensagem via UAZAPI"""
     try:
-        # Normalizar número
-        clean_phone = phone.replace('+', '').replace('-', '').replace(' ', '').replace('(', '').replace(')', '')
+        # Normalizar número - remover TODOS os caracteres não numéricos
+        clean_phone = ''.join(c for c in phone if c.isdigit())
         if not clean_phone.startswith('55'):
             clean_phone = '55' + clean_phone
 
@@ -2172,11 +2196,11 @@ async def automation_scheduler():
 
     ultima_execucao = None
 
+    # Usar horário de Brasília (UTC-3)
+    TZ_BRASILIA = timezone(timedelta(hours=-3))
+
     while True:
         try:
-            # Usar horário de Brasília (UTC-3)
-            from datetime import timezone, timedelta
-            TZ_BRASILIA = timezone(timedelta(hours=-3))
             agora = datetime.now(TZ_BRASILIA)
 
             dia_semana = agora.weekday()  # 0=segunda, 6=domingo
@@ -2272,8 +2296,9 @@ async def get_next_run(
             auto_run = settings['auto_run']
             daily_limit = settings['daily_limit']
 
-            # Calcular próxima execução
-            agora = datetime.now()
+            # Calcular próxima execução (horário de Brasília)
+            TZ_BRASILIA = timezone(timedelta(hours=-3))
+            agora = datetime.now(TZ_BRASILIA)
             dia_semana = agora.weekday()  # 0=segunda, 6=domingo
 
             # Calcular próximo dia útil às 7:30
