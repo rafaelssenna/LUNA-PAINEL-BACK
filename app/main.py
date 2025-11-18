@@ -139,6 +139,14 @@ async def _startup():
     except Exception as e:
         logger.error(f"❌ Erro ao iniciar task de limpeza: {e}")
 
+    # Iniciar scheduler de automação (executa às 7:30 seg-sex)
+    try:
+        from .routes.admin import start_scheduler
+        start_scheduler()
+        logger.info("✅ Agendador de automação iniciado (seg-sex às 7:30)")
+    except Exception as e:
+        logger.error(f"❌ Erro ao iniciar scheduler de automação: {e}")
+
     # DESABILITADO: Não usamos tabelas tenants/payments, usamos billing
     # try:
     #     await init_billing_schema()
