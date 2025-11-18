@@ -1143,13 +1143,23 @@ async def import_contacts_csv(
                 continue
 
             try:
-                await add_contact_to_instance(
+                result = await add_contact_to_instance(
                     instance_id,
                     ContactIn(name=name, phone=phone, niche=niche, region=region),
                     admin,
                 )
-                log.info(f"✅ [CSV IMPORT] Linha {row_count} - Contato {phone} inserido com sucesso")
-                inserted += 1
+                status = result.get("status", "unknown")
+
+                if status == "inserted":
+                    log.info(f"✅ [CSV IMPORT] Linha {row_count} - Contato {phone} inserido com sucesso")
+                    inserted += 1
+                elif status in ["skipped_already_sent", "skipped_conflict"]:
+                    log.warning(f"⚠️ [CSV IMPORT] Linha {row_count} - Contato {phone} já existe ({status})")
+                    skipped += 1
+                else:
+                    log.warning(f"⚠️ [CSV IMPORT] Linha {row_count} - Status desconhecido: {status}")
+                    skipped += 1
+
             except HTTPException as exc:
                 log.warning(f"⚠️ [CSV IMPORT] Linha {row_count} - HTTPException {exc.status_code}: {exc.detail}")
                 if exc.status_code == 400:
