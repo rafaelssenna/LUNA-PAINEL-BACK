@@ -2368,3 +2368,104 @@ async def get_next_run(
                 "hours_until_next": round(tempo_ate_proxima / 3600, 1),
                 "current_time": agora.isoformat()
             }
+
+
+# ==============================================================================
+# BLOQUEAR/DESBLOQUEAR NÚMERO NO WHATSAPP
+# ==============================================================================
+
+@router.post("/instances/{instance_id}/block-number")
+async def block_number(
+    instance_id: str,
+    body: Dict,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Bloquear ou desbloquear um número no WhatsApp via UAZAPI
+    Body: { "number": "5511999999999", "block": true }
+    """
+
+    number = body.get("number", "").strip()
+    block = body.get("block", True)  # True = bloquear, False = desbloquear
+
+    if not number:
+        raise HTTPException(status_code=400, detail="Número é obrigatório")
+
+    # Normalizar número
+    clean_number = ''.join(c for c in number if c.isdigit())
+    if not clean_number.startswith('55'):
+        clean_number = '55' + clean_number
+
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar credenciais UAZAPI da instância
+                cur.execute("""
+                    SELECT uazapi_host, uazapi_token
+                    FROM instances
+                    WHERE id = %s
+                """, (instance_id,))
+
+                instance = cur.fetchone()
+
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+
+                uazapi_host = instance['uazapi_host']
+                uazapi_token = instance['uazapi_token']
+
+                if not uazapi_host or not uazapi_token:
+                    raise HTTPException(status_code=400, detail="Credenciais UAZAPI não configuradas")
+
+        # Normalizar URL
+        if not uazapi_host.startswith('http://') and not uazapi_host.startswith('https://'):
+            uazapi_host = 'https://' + uazapi_host
+
+        url = uazapi_host.rstrip('/') + '/chat/block'
+
+        headers = {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+            'token': uazapi_token
+        }
+
+        payload = {
+            'number': clean_number,
+            'block': block
+        }
+
+        action = "bloqueando" if block else "desbloqueando"
+        log.info(f"🚫 [BLOCK] {action.capitalize()} número {clean_number} na instância {instance_id}")
+        log.info(f"🚫 [BLOCK] URL: {url}")
+        log.info(f"🚫 [BLOCK] Payload: {payload}")
+
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.post(url, json=payload, headers=headers)
+
+            log.info(f"🚫 [BLOCK] Status: {response.status_code}")
+            log.info(f"🚫 [BLOCK] Response: {response.text}")
+
+            if response.status_code == 200:
+                action_past = "bloqueado" if block else "desbloqueado"
+                log.info(f"✅ [BLOCK] Número {clean_number} {action_past} com sucesso!")
+
+                return {
+                    "ok": True,
+                    "message": f"Número {action_past} com sucesso",
+                    "number": clean_number,
+                    "blocked": block
+                }
+            else:
+                log.error(f"❌ [BLOCK] Erro ao {action}: {response.text}")
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Erro ao {action} número: {response.text}"
+                )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"❌ [BLOCK] Exceção: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao bloquear número: {str(e)}")
