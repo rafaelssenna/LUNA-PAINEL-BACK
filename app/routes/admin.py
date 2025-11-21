@@ -2505,17 +2505,26 @@ async def generate_prompt_with_ai(
     try:
         with get_pool().connection() as conn:
             with conn.cursor() as cur:
-                # Buscar dados da instância
+                # Buscar dados da instância + dados do questionário do cliente
                 cur.execute("""
                     SELECT
-                        i.name,
+                        i.phone_name,
+                        i.phone_number,
                         i.prompt,
-                        i.notes,
+                        i.admin_notes,
                         i.redirect_phone,
                         u.email as user_email,
-                        u.name as user_name
+                        u.name as user_name,
+                        q.company_name,
+                        q.product_service,
+                        q.target_audience,
+                        q.prospecting_region,
+                        q.contact_phone,
+                        q.contact_email,
+                        q.has_whatsapp_number
                     FROM instances i
                     LEFT JOIN users u ON i.user_id = u.id
+                    LEFT JOIN user_questionnaires q ON u.id = q.user_id
                     WHERE i.id = %s
                 """, (instance_id,))
 
@@ -2524,11 +2533,16 @@ async def generate_prompt_with_ai(
                 if not instance:
                     raise HTTPException(status_code=404, detail="Instância não encontrada")
 
-        # Dados da empresa
-        company_name = instance.get('name') or 'Empresa'
+        # Dados da empresa (priorizar dados do questionário)
+        company_name = instance.get('company_name') or instance.get('phone_name') or 'Empresa'
         current_prompt = instance.get('prompt') or ''
-        notes = instance.get('notes') or ''
+        notes = instance.get('admin_notes') or ''
         niche = body.niche or 'geral'
+
+        # Dados extras do questionário (o que o cliente preencheu!)
+        product_service = instance.get('product_service') or ''
+        target_audience = instance.get('target_audience') or ''
+        prospecting_region = instance.get('prospecting_region') or ''
 
         # Template Luna base
         luna_template = """# LUNA — IA DE PROSPECÇÃO (PERSONALIZADO)
@@ -2641,17 +2655,43 @@ INSTRUÇÕES:
 
 Retorne APENAS o prompt final, pronto para usar."""
 
-        user_prompt = f"""Empresa: {company_name}
-Nicho: {niche}
+        # Montar contexto completo com dados que o CLIENTE preencheu
+        context_parts = [
+            f"**Nome da Empresa**: {company_name}",
+            f"**Nicho**: {niche}",
+        ]
 
-{f'Prompt atual: {current_prompt[:500]}' if current_prompt else ''}
+        if product_service:
+            context_parts.append(f"**Produtos/Serviços oferecidos**: {product_service}")
 
-{f'Observações/Contexto: {notes}' if notes else ''}
+        if target_audience:
+            context_parts.append(f"**Público-alvo**: {target_audience}")
 
-Gere um prompt Luna PERSONALIZADO para esta empresa, adaptando o template base para o nicho e contexto específicos."""
+        if prospecting_region:
+            context_parts.append(f"**Região de atuação**: {prospecting_region}")
+
+        if current_prompt:
+            context_parts.append(f"\n**Prompt atual (primeiros 500 caracteres)**:\n{current_prompt[:500]}")
+
+        if notes:
+            context_parts.append(f"\n**Observações do Admin**:\n{notes}")
+
+        user_prompt = "\n".join(context_parts) + "\n\n" + """
+Gere um prompt Luna PERSONALIZADO e ESPECÍFICO para esta empresa.
+
+IMPORTANTE:
+- Use o nome real da empresa em todos os exemplos
+- Mencione os produtos/serviços específicos que ela oferece
+- Adapte a linguagem para o público-alvo dela
+- Considere a região de atuação nos exemplos
+- Crie exemplos de abertura REALISTAS e ESPECÍFICOS (não genéricos)
+- Faça a Luna parecer uma consultora interna da empresa, não um robô"""
 
         log.info(f"🤖 [GENERATE-PROMPT] Gerando prompt para instância {instance_id}")
         log.info(f"🤖 [GENERATE-PROMPT] Empresa: {company_name}, Nicho: {niche}")
+        log.info(f"🤖 [GENERATE-PROMPT] Produto/Serviço: {product_service[:100] if product_service else 'N/A'}")
+        log.info(f"🤖 [GENERATE-PROMPT] Público-alvo: {target_audience[:100] if target_audience else 'N/A'}")
+        log.info(f"🤖 [GENERATE-PROMPT] Região: {prospecting_region}")
 
         # Chamar OpenAI
         response = await openai_client.chat.completions.create(
