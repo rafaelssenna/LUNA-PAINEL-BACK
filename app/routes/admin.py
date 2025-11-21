@@ -2514,7 +2514,7 @@ async def generate_prompt_with_ai(
                         i.admin_notes,
                         i.redirect_phone,
                         u.email as user_email,
-                        u.name as user_name,
+                        u.full_name as user_name,
                         q.company_name,
                         q.product_service,
                         q.target_audience,
