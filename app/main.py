@@ -74,9 +74,12 @@ _default_origins = {
 _env_origins = set(allowed_origins())
 _all_origins = sorted(_default_origins.union(_env_origins))
 
+# TEMPORÁRIO: Permitir todas as origens para debug
+_all_origins = ["*"]
+
 # Se não houver origens configuradas OU estiver em localhost, permitir todas
-if not _all_origins or os.getenv("ALLOW_ALL_ORIGINS", "0") == "1":
-    _all_origins = ["*"]
+# if not _all_origins or os.getenv("ALLOW_ALL_ORIGINS", "0") == "1":
+#     _all_origins = ["*"]
 
 app.add_middleware(
     CORSMiddleware,
