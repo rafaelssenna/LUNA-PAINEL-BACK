@@ -2544,8 +2544,8 @@ async def generate_prompt_with_ai(
         target_audience = instance.get('target_audience') or ''
         prospecting_region = instance.get('prospecting_region') or ''
 
-        # Template Luna base
-        luna_template = """# LUNA — IA DE PROSPECÇÃO (PERSONALIZADO)
+        # Buscar template do banco (ou usar hardcoded como fallback)
+        luna_template_fallback = """# LUNA — IA DE PROSPECÇÃO (PERSONALIZADO)
 
 ## 🎯 IDENTIDADE & MISSÃO
 Você é **Luna**, uma IA especializada em prospecção e qualificação de leads para {company_name}.
@@ -2640,6 +2640,27 @@ Transfira para atendimento humano quando:
 
 **Lembre-se**: Você não é apenas uma IA, você é Luna - uma consultora digital focada em gerar valor real para o prospect. Cada conversa é uma oportunidade de construir relacionamento. 🚀"""
 
+        # Tentar buscar template do banco
+        luna_template = luna_template_fallback
+        try:
+            with get_pool().connection() as conn2:
+                with conn2.cursor() as cur2:
+                    cur2.execute("""
+                        SELECT template_content
+                        FROM prompt_templates
+                        WHERE name = 'luna_base'
+                        ORDER BY updated_at DESC
+                        LIMIT 1
+                    """)
+                    db_template = cur2.fetchone()
+                    if db_template and db_template.get('template_content'):
+                        luna_template = db_template['template_content']
+                        log.info("📄 [GENERATE-PROMPT] Usando template do banco de dados")
+                    else:
+                        log.info("📄 [GENERATE-PROMPT] Usando template fallback (hardcoded)")
+        except Exception as e:
+            log.warning(f"⚠️ [GENERATE-PROMPT] Erro ao buscar template do banco, usando fallback: {e}")
+
         # Prompt para a IA gerar prompt personalizado
         system_prompt = f"""Você é um especialista em criar prompts para IAs de prospecção de vendas.
 Você vai receber informações sobre uma empresa e deve gerar um prompt PERSONALIZADO e ESPECÍFICO para aquela empresa.
@@ -2728,3 +2749,95 @@ IMPORTANTE:
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao gerar prompt: {str(e)}")
+
+
+# =========================================
+# PROMPT TEMPLATES - Gerenciamento de templates editáveis
+# =========================================
+
+class PromptTemplateUpdate(BaseModel):
+    template_content: str
+    description: Optional[str] = None
+
+
+@router.get("/prompt-template/{name}")
+async def get_prompt_template(name: str, claims: Dict[str, Any] = Depends(admin_required)):
+    """Busca um template de prompt pelo nome"""
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("""
+                    SELECT id, name, template_content, description, created_at, updated_at
+                    FROM prompt_templates
+                    WHERE name = %s
+                """, (name,))
+
+                template = cur.fetchone()
+
+                if not template:
+                    raise HTTPException(status_code=404, detail="Template não encontrado")
+
+                return {
+                    "ok": True,
+                    "template": {
+                        "id": template["id"],
+                        "name": template["name"],
+                        "template_content": template["template_content"],
+                        "description": template["description"],
+                        "created_at": template["created_at"].isoformat() if template.get("created_at") else None,
+                        "updated_at": template["updated_at"].isoformat() if template.get("updated_at") else None,
+                    }
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"❌ [GET-TEMPLATE] Erro: {e}")
+        raise HTTPException(status_code=500, detail=f"Erro ao buscar template: {str(e)}")
+
+
+@router.post("/prompt-template/{name}")
+async def upsert_prompt_template(
+    name: str,
+    body: PromptTemplateUpdate,
+    claims: Dict[str, Any] = Depends(admin_required)
+):
+    """Cria ou atualiza um template de prompt"""
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Upsert: insert ou update se já existir
+                cur.execute("""
+                    INSERT INTO prompt_templates (name, template_content, description, updated_at)
+                    VALUES (%s, %s, %s, NOW())
+                    ON CONFLICT (name)
+                    DO UPDATE SET
+                        template_content = EXCLUDED.template_content,
+                        description = EXCLUDED.description,
+                        updated_at = NOW()
+                    RETURNING id, name, template_content, description, created_at, updated_at
+                """, (name, body.template_content, body.description))
+
+                template = cur.fetchone()
+                conn.commit()
+
+                log.info(f"✅ [UPSERT-TEMPLATE] Template '{name}' salvo com sucesso")
+
+                return {
+                    "ok": True,
+                    "message": "Template salvo com sucesso",
+                    "template": {
+                        "id": template["id"],
+                        "name": template["name"],
+                        "template_content": template["template_content"],
+                        "description": template["description"],
+                        "created_at": template["created_at"].isoformat() if template.get("created_at") else None,
+                        "updated_at": template["updated_at"].isoformat() if template.get("updated_at") else None,
+                    }
+                }
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"❌ [UPSERT-TEMPLATE] Erro: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao salvar template: {str(e)}")

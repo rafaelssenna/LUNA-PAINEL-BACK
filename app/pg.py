@@ -555,6 +555,24 @@ def init_schema():
     COMMENT ON COLUMN ai_memory.role IS 'Papel da mensagem: user, assistant ou system';
     COMMENT ON COLUMN ai_memory.content IS 'Conteúdo da mensagem';
     COMMENT ON COLUMN ai_memory.metadata IS 'Dados adicionais (chat_id, message_id, etc)';
+
+    -- =========================================
+    -- PROMPT TEMPLATES (Templates de prompts editáveis)
+    -- =========================================
+    CREATE TABLE IF NOT EXISTS prompt_templates (
+      id                SERIAL PRIMARY KEY,
+      name              TEXT NOT NULL UNIQUE,
+      template_content  TEXT NOT NULL,
+      description       TEXT,
+      created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+      updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+    );
+
+    CREATE INDEX IF NOT EXISTS idx_prompt_templates_name ON prompt_templates(name);
+
+    COMMENT ON TABLE prompt_templates IS 'Templates de prompts editáveis pelo admin';
+    COMMENT ON COLUMN prompt_templates.name IS 'Nome identificador do template (ex: luna_base)';
+    COMMENT ON COLUMN prompt_templates.template_content IS 'Conteúdo do template (markdown)';
     """
     with get_pool().connection() as con:
         con.execute(sql)
