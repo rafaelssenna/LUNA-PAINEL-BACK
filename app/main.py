@@ -69,6 +69,7 @@ app = FastAPI(title="Luna Backend", version="1.0.0")
 _default_origins = {
     "https://www.lunahia.com.br",
     "https://lunahia.com.br",  # opcional, sem www
+    "https://luna-painel-criar.vercel.app",  # Painel Admin Vercel
 }
 _env_origins = set(allowed_origins())
 _all_origins = sorted(_default_origins.union(_env_origins))
