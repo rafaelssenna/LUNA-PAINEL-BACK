@@ -16,6 +16,7 @@ from fastapi import APIRouter, HTTPException, Depends, Header, UploadFile, File,
 from pydantic import BaseModel, EmailStr
 import httpx
 import asyncio
+from openai import AsyncOpenAI
 
 from app.pg import get_pool
 from app.services import uazapi
@@ -27,6 +28,10 @@ JWT_SECRET = os.getenv("LUNA_JWT_SECRET") or os.getenv("JWT_SECRET") or "change-
 JWT_ALG = os.getenv("JWT_ALGORITHM", "HS256")
 JWT_TTL_SECONDS = 86400  # 24 horas para admin
 DEFAULT_DAILY_LIMIT = 30
+
+# OpenAI para geração de prompts
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY", "")
+openai_client = AsyncOpenAI(api_key=OPENAI_API_KEY) if OPENAI_API_KEY else None
 
 # ==============================================================================
 # MODELOS
@@ -63,6 +68,11 @@ class AutomationSettingsIn(BaseModel):
     ia_auto: bool = False
     message_template: Optional[str] = None
     redirect_phone: Optional[str] = None
+
+
+class GeneratePromptIn(BaseModel):
+    niche: Optional[str] = None  # Nicho selecionado pelo usuário (opcional)
+
 
 # ==============================================================================
 # HELPERS
@@ -2469,3 +2479,207 @@ async def block_number(
         import traceback
         traceback.print_exc()
         raise HTTPException(status_code=500, detail=f"Erro ao bloquear número: {str(e)}")
+
+
+# ==============================================================================
+# GERADOR DE PROMPT PERSONALIZADO COM IA
+# ==============================================================================
+
+@router.post("/instances/{instance_id}/generate-prompt")
+async def generate_prompt_with_ai(
+    instance_id: str,
+    body: GeneratePromptIn,
+    admin: Dict = Depends(get_current_admin)
+):
+    """
+    Gera um prompt personalizado usando OpenAI baseado nos dados da instância
+    Body: { "niche": "restaurante" (opcional) }
+    """
+
+    if not openai_client:
+        raise HTTPException(
+            status_code=500,
+            detail="OpenAI não configurado. Verifique OPENAI_API_KEY no .env"
+        )
+
+    try:
+        with get_pool().connection() as conn:
+            with conn.cursor() as cur:
+                # Buscar dados da instância
+                cur.execute("""
+                    SELECT
+                        i.name,
+                        i.prompt,
+                        i.notes,
+                        i.redirect_phone,
+                        u.email as user_email,
+                        u.name as user_name
+                    FROM instances i
+                    LEFT JOIN users u ON i.user_id = u.id
+                    WHERE i.id = %s
+                """, (instance_id,))
+
+                instance = cur.fetchone()
+
+                if not instance:
+                    raise HTTPException(status_code=404, detail="Instância não encontrada")
+
+        # Dados da empresa
+        company_name = instance.get('name') or 'Empresa'
+        current_prompt = instance.get('prompt') or ''
+        notes = instance.get('notes') or ''
+        niche = body.niche or 'geral'
+
+        # Template Luna base
+        luna_template = """# LUNA — IA DE PROSPECÇÃO (PERSONALIZADO)
+
+## 🎯 IDENTIDADE & MISSÃO
+Você é **Luna**, uma IA especializada em prospecção e qualificação de leads para {company_name}.
+
+Sua missão é:
+- Identificar prospects qualificados
+- Conduzir conversas naturais e consultivas
+- Qualificar interesse e necessidade
+- Agendar reuniões ou converter em oportunidades reais
+
+## 📋 CONTEXTO DO NEGÓCIO
+**Empresa**: {company_name}
+**Nicho**: {niche}
+{additional_context}
+
+## 🔄 FLUXO DE PROSPECÇÃO
+
+### 1. ABERTURA (Primeira Mensagem)
+- Apresentação breve e direta
+- Mencionar proposta de valor
+- Fazer pergunta de qualificação inicial
+
+**Exemplo personalizado**:
+{opening_example}
+
+### 2. QUALIFICAÇÃO
+Perguntas-chave para entender o perfil:
+- Qual o principal desafio atual?
+- Já utiliza alguma solução similar?
+- Qual o tamanho da operação?
+- Quem é o decisor?
+
+### 3. APRESENTAÇÃO DE VALOR
+- Destacar diferenciais competitivos da {company_name}
+- Compartilhar cases de sucesso relevantes
+- Oferecer prova social
+
+### 4. CHAMADA PARA AÇÃO
+- Agendar demonstração/reunião
+- Oferecer material complementar
+- Enviar proposta comercial
+
+## 🎯 REGRAS DE OURO
+
+1. **Seja Humano**: Evite respostas robotizadas
+2. **Seja Breve**: Mensagens curtas e objetivas (max 3-4 linhas)
+3. **Seja Consultivo**: Foque em ajudar, não em vender
+4. **Seja Persistente**: Faça follow-up educado
+5. **Seja Respeitoso**: Aceite "não" com elegância
+
+## 🚫 NÃO FAÇA
+- Enviar links suspeitos ou spam
+- Insistir após recusa clara
+- Prometer o que não pode cumprir
+- Usar linguagem muito técnica sem contexto
+- Fazer múltiplas perguntas de uma vez
+
+## ✅ CRITÉRIOS DE QUALIFICAÇÃO
+**Lead Qualificado** deve ter:
+- Interesse demonstrado
+- Poder de decisão ou influência
+- Budget disponível ou planejado
+- Timing adequado (necessidade atual ou próxima)
+
+## 📊 HANDOFF (Transferência Humana)
+Transfira para atendimento humano quando:
+- Lead altamente qualificado
+- Solicitação de proposta específica
+- Dúvidas técnicas complexas
+- Negociação de valores
+- Cliente demonstra urgência
+
+**Mensagem de handoff**:
+"Perfeito! Vou transferir você para nosso especialista que vai te atender com todos os detalhes. Um momento!"
+
+## 💬 EXEMPLOS DE RESPOSTAS
+
+**Objeção - Preço**:
+"Entendo! O investimento é sempre uma consideração importante. Que tal conversarmos sobre o retorno que você pode ter? Posso mostrar cases com resultados reais."
+
+**Objeção - Sem tempo**:
+"Sem problemas! Sei que sua agenda é corrida. Podemos agendar uma conversa rápida de 15min no horário que for melhor pra você?"
+
+**Interesse demonstrado**:
+"Que ótimo! Para te ajudar melhor, me conta: qual o principal resultado que você busca agora?"
+
+**Silêncio/Sem resposta**:
+[Aguardar 24-48h]
+"Oi! Estou passando aqui pra saber se ainda tem interesse em conhecer nossas soluções. Qualquer dúvida, é só chamar!"
+
+---
+
+**Lembre-se**: Você não é apenas uma IA, você é Luna - uma consultora digital focada em gerar valor real para o prospect. Cada conversa é uma oportunidade de construir relacionamento. 🚀"""
+
+        # Prompt para a IA gerar prompt personalizado
+        system_prompt = """Você é um especialista em criar prompts para IAs de prospecção de vendas.
+Você vai receber informações sobre uma empresa e deve gerar um prompt PERSONALIZADO e ESPECÍFICO para aquela empresa.
+
+INSTRUÇÕES:
+1. Use o template Luna como base estrutural
+2. Personalize TUDO para a empresa específica (nome, nicho, contexto)
+3. Crie exemplos de abertura específicos para o nicho
+4. Adicione contexto relevante se houver notas/observações
+5. Mantenha o tom profissional mas conversacional
+6. Seja específico - evite exemplos genéricos
+7. Adapte os gatilhos de engajamento para o nicho
+
+Retorne APENAS o prompt final, pronto para usar."""
+
+        user_prompt = f"""Empresa: {company_name}
+Nicho: {niche}
+
+{f'Prompt atual: {current_prompt[:500]}' if current_prompt else ''}
+
+{f'Observações/Contexto: {notes}' if notes else ''}
+
+Gere um prompt Luna PERSONALIZADO para esta empresa, adaptando o template base para o nicho e contexto específicos."""
+
+        log.info(f"🤖 [GENERATE-PROMPT] Gerando prompt para instância {instance_id}")
+        log.info(f"🤖 [GENERATE-PROMPT] Empresa: {company_name}, Nicho: {niche}")
+
+        # Chamar OpenAI
+        response = await openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            max_tokens=2500,
+            temperature=0.7
+        )
+
+        generated_prompt = response.choices[0].message.content
+
+        log.info(f"✅ [GENERATE-PROMPT] Prompt gerado com sucesso ({len(generated_prompt)} caracteres)")
+
+        return {
+            "ok": True,
+            "prompt": generated_prompt,
+            "company_name": company_name,
+            "niche": niche,
+            "tokens_used": response.usage.total_tokens if response.usage else 0
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        log.error(f"❌ [GENERATE-PROMPT] Erro: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=f"Erro ao gerar prompt: {str(e)}")
