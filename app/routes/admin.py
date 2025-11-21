@@ -2641,17 +2641,22 @@ Transfira para atendimento humano quando:
 **Lembre-se**: Você não é apenas uma IA, você é Luna - uma consultora digital focada em gerar valor real para o prospect. Cada conversa é uma oportunidade de construir relacionamento. 🚀"""
 
         # Prompt para a IA gerar prompt personalizado
-        system_prompt = """Você é um especialista em criar prompts para IAs de prospecção de vendas.
+        system_prompt = f"""Você é um especialista em criar prompts para IAs de prospecção de vendas.
 Você vai receber informações sobre uma empresa e deve gerar um prompt PERSONALIZADO e ESPECÍFICO para aquela empresa.
 
+TEMPLATE LUNA BASE (use como referência estrutural):
+{luna_template}
+
 INSTRUÇÕES:
-1. Use o template Luna como base estrutural
+1. Use o template Luna acima como base estrutural
 2. Personalize TUDO para a empresa específica (nome, nicho, contexto)
 3. Crie exemplos de abertura específicos para o nicho
 4. Adicione contexto relevante se houver notas/observações
 5. Mantenha o tom profissional mas conversacional
 6. Seja específico - evite exemplos genéricos
 7. Adapte os gatilhos de engajamento para o nicho
+8. Substitua {{company_name}}, {{niche}} e {{additional_context}} pelos dados reais
+9. Crie um exemplo de abertura realista no lugar de {{opening_example}}
 
 Retorne APENAS o prompt final, pronto para usar."""
 
